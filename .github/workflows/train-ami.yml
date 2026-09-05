@@ -1,0 +1,63 @@
+name: train-ami-baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'training/**'
+      - 'requirements-training.txt'
+      - '.github/workflows/train-ami.yml'
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install training dependencies
+        run: pip install -r requirements-training.txt
+
+      - name: Download AMI manual annotations
+        run: python -m training.download_ami
+
+      - name: Build dataset and train baseline
+        run: python -m training.run_ami_training --skip-download
+
+      - name: Publish metrics to job summary
+        if: always()
+        run: |
+          if [ -f artifacts/meeting_event_baseline/metrics.json ]; then
+            python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path('artifacts/meeting_event_baseline/metrics.json')
+          m = json.loads(p.read_text())
+          report = m['classification_report']
+          with open(pathlib.Path().resolve() / 'summary.md', 'w') as f:
+              f.write('# MeetingLens AMI baseline\n\n')
+              f.write(f"- Rows: {m['rows_total']}\n")
+              f.write(f"- Train meetings: {len(m['train_meetings'])}\n")
+              f.write(f"- Test meetings: {len(m['test_meetings'])}\n")
+              f.write(f"- Macro F1: {report['macro avg']['f1-score']:.4f}\n")
+              f.write(f"- Weighted F1: {report['weighted avg']['f1-score']:.4f}\n")
+          PY
+            cat summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload trained model and metrics
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meetinglens-ami-baseline
+          path: |
+            artifacts/meeting_event_baseline/
+            data/processed/ami_events.csv
+          retention-days: 14
