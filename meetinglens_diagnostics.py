@@ -20,6 +20,16 @@ def _module_available(name: str) -> bool:
         return False
 
 
+def _secret_configured(name: str) -> bool:
+    if os.getenv(name, "").strip():
+        return True
+    try:
+        import streamlit as st
+        return bool(str(st.secrets.get(name, "")).strip())
+    except Exception:
+        return False
+
+
 def _file_state(path: Path) -> dict[str, Any]:
     exists = path.exists() and path.is_file()
     return {
@@ -39,12 +49,14 @@ def collect_runtime_status(check_memory: bool = False) -> dict[str, Any]:
     memory = {
         "ok": True,
         "backend": getattr(store, "backend", "unknown"),
+        "workspace_id": getattr(store, "workspace_id", "default"),
         "detail": "Connection not tested yet.",
     }
     if check_memory:
         memory = store.healthcheck()
 
-    hf_configured = bool(os.getenv("HF_TOKEN", "").strip())
+    pyannote_installed = _module_available("pyannote.audio")
+    hf_configured = _secret_configured("HF_TOKEN")
     supabase_configured = getattr(store, "backend", "") == "supabase"
 
     return {
@@ -65,10 +77,10 @@ def collect_runtime_status(check_memory: bool = False) -> dict[str, Any]:
             "metrics": metrics,
         },
         "diarization": {
-            "ok": _module_available("pyannote.audio"),
-            "runtime_installed": _module_available("pyannote.audio"),
+            "ok": pyannote_installed,
+            "runtime_installed": pyannote_installed,
             "hf_token_configured": hf_configured,
-            "detail": "Ready" if _module_available("pyannote.audio") and hf_configured else "Optional runtime/token incomplete",
+            "detail": "Ready" if pyannote_installed and hf_configured else "Optional runtime/token incomplete",
         },
         "memory": memory,
         "supabase_configured": supabase_configured,
