@@ -1,0 +1,33 @@
+name: patch-product-flow
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/patch-product-flow.yml'
+      - 'scripts/patch_product_flow.py'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply product flow patch
+        run: python scripts/patch_product_flow.py
+      - name: Commit product flow
+        run: |
+          git config user.name "meetinglens-product-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py pages/1_Analyze_Audio.py
+          if git diff --cached --quiet; then
+            echo "Product flow already patched."
+          else
+            git commit -m "feat: connect audio analysis, memory vault, and dashboard"
+            git push origin HEAD:main
+          fi
