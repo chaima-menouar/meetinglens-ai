@@ -36,6 +36,8 @@ class Example:
     label: str
     dialogue_act: str = ""
     source_id: str = ""
+    label_source: str = "other"
+    gold_label: str = "other"
 
 
 def _local_name(tag: str) -> str:
@@ -115,7 +117,6 @@ def _expand_ref_ids(href: str, order_by_file: dict[str, list[str]]) -> list[str]
 
 
 def _load_da_types(corpus_root: Path) -> dict[str, str]:
-    """Resolve AMI ontology ids (ami_da_*) to human-readable name + gloss."""
     candidates = list(corpus_root.rglob("da-types.xml"))
     if not candidates:
         return {}
@@ -137,20 +138,25 @@ def _load_da_types(corpus_root: Path) -> dict[str, str]:
     return mapping
 
 
-def infer_label(dialogue_act: str, text: str, decision_ref: bool = False) -> str:
+def infer_label_with_source(dialogue_act: str, text: str, decision_ref: bool = False) -> tuple[str, str]:
     da = (dialogue_act or "").lower().replace("_", "-")
     low = (text or "").lower()
-    if decision_ref or any(token in da for token in DECISION_TYPES):
-        return "decision"
+    if decision_ref:
+        return "decision", "explicit_decision_ref"
+    if any(token in da for token in DECISION_TYPES):
+        return "decision", "dialogue_act"
     if any(token in da for token in ACTION_TYPES):
-        return "action"
+        return "action", "dialogue_act"
     if any(token in low for token in RISK_WORDS):
-        return "risk"
-    return "other"
+        return "risk", "lexical_risk"
+    return "other", "other"
+
+
+def infer_label(dialogue_act: str, text: str, decision_ref: bool = False) -> str:
+    return infer_label_with_source(dialogue_act, text, decision_ref=decision_ref)[0]
 
 
 def _dialogue_act_type(element: ET.Element, da_types: dict[str, str]) -> str:
-    """AMI dacts point to da-types.xml rather than storing the type inline."""
     for child in element.iter():
         if _local_name(child.tag).lower() != "pointer":
             continue
@@ -161,7 +167,6 @@ def _dialogue_act_type(element: ET.Element, da_types: dict[str, str]) -> str:
             if ids:
                 return da_types.get(ids[0], ids[0])
 
-    # Compatibility with converted/simplified AMI XML.
     for key in ("niteType", "type", "da-type", "dialogue_act", "dialogue-act"):
         if key in element.attrib:
             return element.attrib[key]
@@ -178,13 +183,7 @@ def _prefer_label(existing: str | None, candidate: str) -> str:
 
 
 def _collect_summary_link_labels(corpus_root: Path) -> dict[str, str]:
-    """Map AMI dialogue-act ids to decision/action/risk using gold summary links.
-
-    AMI abstractive summaries explicitly separate DECISIONS, ACTIONS and PROBLEMS.
-    The corresponding ``*.summlink.xml`` files point from an extracted dialogue act
-    to an abstractive sentence.  Following these links gives substantially cleaner
-    supervision than keyword-only weak labels and is the intended NXT relation.
-    """
+    """Map extractive dialogue acts to gold decision/action/risk summary sections."""
     sentence_labels: dict[str, str] = {}
     for path in sorted(corpus_root.rglob("*.abssumm.xml")):
         try:
@@ -234,7 +233,6 @@ def _collect_summary_link_labels(corpus_root: Path) -> dict[str, str]:
 
 
 def _collect_decision_refs(corpus_root: Path) -> set[str]:
-    """Legacy compatibility: collect explicit dialogue-act refs in decision files, if any."""
     refs: set[str] = set()
     decision_dirs = [p for p in corpus_root.rglob("decision") if p.is_dir()]
     files: list[Path] = []
@@ -289,10 +287,29 @@ def build_examples(corpus_root: str | Path) -> list[Example]:
                 text = _token_text(el)
             if not text or len(text) < 2:
                 continue
-            label = summary_link_labels.get(source_id)
-            if not label:
-                label = infer_label(da_type, text, decision_ref=source_id in decision_refs)
-            examples.append(Example(meeting, speaker, text, label, da_type, source_id))
+
+            gold_label = summary_link_labels.get(source_id, "other")
+            if gold_label != "other":
+                label = gold_label
+                label_source = "summary_link"
+            else:
+                label, label_source = infer_label_with_source(
+                    da_type,
+                    text,
+                    decision_ref=source_id in decision_refs,
+                )
+            examples.append(
+                Example(
+                    meeting,
+                    speaker,
+                    text,
+                    label,
+                    da_type,
+                    source_id,
+                    label_source,
+                    gold_label,
+                )
+            )
     return examples
 
 
@@ -317,7 +334,13 @@ if __name__ == "__main__":
     data = build_examples(args.corpus_root)
     write_csv(data, args.output)
     counts: dict[str, int] = {}
+    gold_counts: dict[str, int] = {}
+    sources: dict[str, int] = {}
     for row in data:
         counts[row.label] = counts.get(row.label, 0) + 1
+        gold_counts[row.gold_label] = gold_counts.get(row.gold_label, 0) + 1
+        sources[row.label_source] = sources.get(row.label_source, 0) + 1
     print(f"wrote {len(data)} examples to {args.output}")
-    print("label distribution:", counts)
+    print("mixed label distribution:", counts)
+    print("gold label distribution:", gold_counts)
+    print("label sources:", sources)
