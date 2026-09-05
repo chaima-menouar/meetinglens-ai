@@ -1,0 +1,74 @@
+name: train-semantic-detectors
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'training/train_semantic_detectors.py'
+      - 'requirements-semantic.txt'
+      - '.github/workflows/train-semantic.yml'
+
+jobs:
+  train-semantic:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install semantic training dependencies
+        run: pip install -r requirements-semantic.txt
+
+      - name: Download AMI manual annotations
+        run: python -m training.download_ami
+
+      - name: Build transcript dataset
+        run: python -m training.ami_dataset data/raw/ami/ami_public_manual_1.6.2 --output data/processed/ami_events.csv
+
+      - name: Train semantic transcript-only detectors
+        env:
+          TOKENIZERS_PARALLELISM: 'false'
+        run: python -m training.train_semantic_detectors --data data/processed/ami_events.csv --output artifacts/meeting_event_detectors_semantic --batch-size 128
+
+      - name: Publish semantic metrics
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          p = Path('artifacts/meeting_event_detectors_semantic/metrics.json')
+          if not p.exists():
+              raise SystemExit(0)
+          m = json.loads(p.read_text())
+          lines = [
+              '# MeetingLens semantic transcript-only detectors',
+              '',
+              f"- Encoder: {m['encoder']}",
+              f"- Macro event F1: {m['macro_event_f1']:.4f}",
+              f"- Macro event AP: {m['macro_event_average_precision']:.4f}",
+          ]
+          for event, values in m['events'].items():
+              lines.append(
+                  f"- {event}: F1={values['f1']:.4f}, precision={values['precision']:.4f}, "
+                  f"recall={values['recall']:.4f}, AP={values['average_precision']:.4f}, "
+                  f"threshold={values['threshold']:.4f}"
+              )
+          Path('semantic-summary.md').write_text('\n'.join(lines) + '\n')
+          PY
+          if [ -f semantic-summary.md ]; then cat semantic-summary.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload semantic models and metrics
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meetinglens-semantic-detectors
+          path: |
+            artifacts/meeting_event_detectors_semantic/
+          retention-days: 14
