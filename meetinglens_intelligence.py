@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from typing import Any
 
 _STOP = {
@@ -144,3 +144,35 @@ def build_topic_index(meetings: list[dict[str, Any]], top_n: int = 12) -> list[t
         for seg in meeting.get("segments", []):
             counter.update(tokens(seg.get("text", "")))
     return counter.most_common(top_n)
+
+
+def action_accountability(meetings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Flatten action items and flag ownership/deadline gaps for execution review."""
+    output: list[dict[str, Any]] = []
+    for meeting_index, meeting in enumerate(meetings):
+        meeting_title = meeting.get("title", f"Meeting {meeting_index + 1}")
+        for action_index, action in enumerate(meeting.get("actions", [])):
+            owner = str(action.get("owner") or "Unassigned").strip()
+            due = str(action.get("due") or "Not stated").strip()
+            status = str(action.get("status") or "Open").strip()
+            missing_owner = owner.lower() in {"unassigned", "unknown", "speaker", "speaker 1", ""}
+            missing_due = due.lower() in {"not stated", "tbd", "unknown", "none", ""}
+            gaps = []
+            if missing_owner:
+                gaps.append("owner")
+            if missing_due:
+                gaps.append("deadline")
+            output.append({
+                "meeting": meeting_title,
+                "meeting_index": meeting_index,
+                "action_index": action_index,
+                "task": action.get("task", ""),
+                "owner": owner,
+                "due": due,
+                "status": status,
+                "timestamp": action.get("timestamp", "00:00"),
+                "confidence": action.get("confidence"),
+                "needs_attention": bool(gaps),
+                "missing": ", ".join(gaps) if gaps else "—",
+            })
+    return sorted(output, key=lambda x: (not x["needs_attention"], x["meeting_index"], x["action_index"]))
