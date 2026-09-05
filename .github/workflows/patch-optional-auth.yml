@@ -1,0 +1,33 @@
+name: patch-optional-auth
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/patch-optional-auth.yml'
+      - 'scripts/patch_optional_auth.py'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply optional auth gate
+        run: python scripts/patch_optional_auth.py
+      - name: Commit auth integration
+        run: |
+          git config user.name "meetinglens-auth-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py pages/*.py
+          if git diff --cached --quiet; then
+            echo "Auth gate already applied."
+          else
+            git commit -m "feat: gate all pages when OIDC auth is configured"
+            git push origin HEAD:main
+          fi
