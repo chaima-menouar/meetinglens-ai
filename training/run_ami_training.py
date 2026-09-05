@@ -7,6 +7,7 @@ from pathlib import Path
 from training.ami_dataset import build_examples, write_csv
 from training.download_ami import download_annotations
 from training.train_baseline import train
+from training.train_candidate_rankers import train_candidate_rankers
 from training.train_event_detectors import train_event_detectors
 from training.train_production_detectors import train_production_detectors
 
@@ -26,6 +27,7 @@ def run(skip_download: bool = False, corpus_root: str | None = None) -> dict:
     baseline_dir = Path("artifacts/meeting_event_baseline")
     detectors_dir = Path("artifacts/meeting_event_detectors_v2")
     production_dir = Path("artifacts/meeting_event_detectors_production")
+    rankers_dir = Path("artifacts/meeting_candidate_rankers")
 
     examples = build_examples(root)
     if not examples:
@@ -37,11 +39,13 @@ def run(skip_download: bool = False, corpus_root: str | None = None) -> dict:
     baseline = train(dataset_path, baseline_dir)
     detectors = train_event_detectors(dataset_path, detectors_dir)
     production = train_production_detectors(dataset_path, production_dir)
+    rankers = train_candidate_rankers(dataset_path, rankers_dir)
     summary = {
         "dataset": str(dataset_path),
         "baseline_artifact_dir": str(baseline_dir),
         "detectors_artifact_dir": str(detectors_dir),
         "production_artifact_dir": str(production_dir),
+        "rankers_artifact_dir": str(rankers_dir),
         "examples": len(examples),
         "labels": baseline["labels"],
         "baseline_macro_f1": baseline["classification_report"]["macro avg"]["f1-score"],
@@ -52,6 +56,7 @@ def run(skip_download: bool = False, corpus_root: str | None = None) -> dict:
         "production_macro_event_f1": production["macro_event_f1"],
         "production_macro_event_average_precision": production["macro_event_average_precision"],
         "production_events": production["events"],
+        "candidate_rankers": rankers["events"],
         "train_meetings": len(baseline["train_meetings"]),
         "test_meetings": len(baseline["test_meetings"]),
     }
