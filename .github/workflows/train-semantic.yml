@@ -5,9 +5,14 @@ on:
   push:
     branches: [main]
     paths:
+      - 'training/ami_dataset.py'
       - 'training/train_semantic_detectors.py'
       - 'requirements-semantic.txt'
       - '.github/workflows/train-semantic.yml'
+
+concurrency:
+  group: meetinglens-semantic-training-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   train-semantic:
@@ -51,6 +56,7 @@ jobs:
               '# MeetingLens semantic transcript-only detectors',
               '',
               f"- Encoder: {m['encoder']}",
+              f"- Supervision: {m.get('supervision', 'legacy')}",
               f"- Macro event F1: {m['macro_event_f1']:.4f}",
               f"- Macro event AP: {m['macro_event_average_precision']:.4f}",
           ]
