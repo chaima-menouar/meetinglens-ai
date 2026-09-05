@@ -8,6 +8,7 @@ def sample_meetings():
     return [
         {
             "title": "Launch Weekly 1",
+            "saved_at": "2026-09-01T09:00:00+00:00",
             "duration_min": 20,
             "segments": [
                 {"text": "We will keep the Friday release.", "speaker": "Maya", "kind": "decision", "timestamp": "10:00"},
@@ -19,6 +20,7 @@ def sample_meetings():
         },
         {
             "title": "Launch Weekly 2",
+            "saved_at": "2026-09-03T09:00:00+00:00",
             "duration_min": 25,
             "segments": [{"text": "We changed the Friday release and will delay it.", "speaker": "Maya", "kind": "decision", "timestamp": "08:00"}],
             "decisions": [{"title": "We changed the Friday release", "detail": "Delay the launch instead"}],
@@ -53,6 +55,16 @@ def test_decision_drift_finds_changed_decision():
     assert drift[0]["to_meeting"] == "Launch Weekly 2"
     assert drift[0]["change_type"] == "delay"
     assert drift[0]["confidence"] >= 0.5
+
+
+def test_decision_drift_uses_saved_at_when_vault_order_is_reversed():
+    meetings = list(reversed(sample_meetings()))
+    drift = decision_drift(meetings)
+    assert drift
+    assert drift[0]["from_meeting"] == "Launch Weekly 1"
+    assert drift[0]["to_meeting"] == "Launch Weekly 2"
+    assert drift[0]["from_time"] == "2026-09-01T09:00:00+00:00"
+    assert drift[0]["to_time"] == "2026-09-03T09:00:00+00:00"
 
 
 def test_recurring_blockers_cluster_related_risks():
