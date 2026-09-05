@@ -66,8 +66,10 @@ def _evaluate(y_true: np.ndarray, probabilities: np.ndarray, threshold: float) -
 
 
 def train_production_detectors(data_path: str | Path, output_dir: str | Path) -> dict:
-    df = pd.read_csv(data_path).dropna(subset=["text", "label", "meeting_id"])
+    df = pd.read_csv(data_path).dropna(subset=["text", "meeting_id"])
     df = df[df["text"].astype(str).str.len() >= 2].copy()
+    target_column = "gold_label" if "gold_label" in df.columns else "label"
+    df[target_column] = df[target_column].fillna("other").astype(str)
     train_df, val_df, test_df = split_train_val_test(df)
 
     output = Path(output_dir)
@@ -75,26 +77,29 @@ def train_production_detectors(data_path: str | Path, output_dir: str | Path) ->
 
     metrics: dict[str, object] = {
         "model": "production_text_only_tfidf_logistic_regression",
+        "target_column": target_column,
+        "supervision": "gold_summary_links" if target_column == "gold_label" else "legacy_mixed_labels",
         "production_features": ["transcript_text"],
-        "annotation_features_excluded": ["dialogue_act", "summary_links"],
+        "annotation_features_excluded_from_inputs": ["dialogue_act", "summary_links"],
         "rows_total": int(len(df)),
         "train_rows": int(len(train_df)),
         "validation_rows": int(len(val_df)),
         "test_rows": int(len(test_df)),
         "events": {},
     }
-    predictions = test_df[["meeting_id", "speaker", "text", "label"]].copy()
+    keep_cols = [c for c in ["meeting_id", "speaker", "text", "label", "label_source", "gold_label"] if c in test_df.columns]
+    predictions = test_df[keep_cols].copy()
 
     train_text = train_df["text"].fillna("").astype(str)
     val_text = val_df["text"].fillna("").astype(str)
     test_text = test_df["text"].fillna("").astype(str)
 
     for event in EVENT_LABELS:
-        y_train = (train_df["label"].astype(str) == event).astype(int).to_numpy()
-        y_val = (val_df["label"].astype(str) == event).astype(int).to_numpy()
-        y_test = (test_df["label"].astype(str) == event).astype(int).to_numpy()
+        y_train = (train_df[target_column] == event).astype(int).to_numpy()
+        y_val = (val_df[target_column] == event).astype(int).to_numpy()
+        y_test = (test_df[target_column] == event).astype(int).to_numpy()
         if y_train.sum() == 0 or y_val.sum() == 0 or y_test.sum() == 0:
-            raise ValueError(f"Event {event!r} is missing positives in one split")
+            raise ValueError(f"Event {event!r} is missing gold positives in one split")
 
         vectorizer, classifier = build_detector()
         x_train = vectorizer.fit_transform(train_text)
@@ -116,8 +121,9 @@ def train_production_detectors(data_path: str | Path, output_dir: str | Path) ->
                 "classifier": classifier,
                 "threshold": threshold,
                 "event": event,
-                "version": "production-text-v1",
+                "version": "production-text-gold-v2",
                 "input": "transcript_text_only",
+                "supervision": metrics["supervision"],
             },
             output / f"{event}_detector.joblib",
             compress=3,
@@ -144,6 +150,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     result = train_production_detectors(args.data, args.output)
     print(json.dumps({
+        "supervision": result["supervision"],
         "macro_event_f1": result["macro_event_f1"],
         "macro_event_average_precision": result["macro_event_average_precision"],
         "events": result["events"],
