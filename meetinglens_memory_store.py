@@ -145,29 +145,15 @@ class SupabaseMeetingMemoryStore:
     def upsert(self, meeting: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
         item = prepare_meeting(meeting)
         existing = {m.get("meeting_id") for m in self.load()}
-        row = {
-            "meeting_id": item["meeting_id"],
-            "saved_at": item["saved_at"],
-            "payload": item,
-        }
-        self._request(
-            "POST",
-            {"on_conflict": "meeting_id"},
-            [row],
-            "resolution=merge-duplicates,return=minimal",
-        )
+        row = {"meeting_id": item["meeting_id"], "saved_at": item["saved_at"], "payload": item}
+        self._request("POST", {"on_conflict": "meeting_id"}, [row], "resolution=merge-duplicates,return=minimal")
         return self.load(), item["meeting_id"] not in existing
 
     def replace_all(self, meetings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         items = _dedupe(meetings)
         if items:
             rows = [{"meeting_id": m["meeting_id"], "saved_at": m["saved_at"], "payload": m} for m in items]
-            self._request(
-                "POST",
-                {"on_conflict": "meeting_id"},
-                rows,
-                "resolution=merge-duplicates,return=minimal",
-            )
+            self._request("POST", {"on_conflict": "meeting_id"}, rows, "resolution=merge-duplicates,return=minimal")
         return self.load()
 
     def clear(self) -> None:
@@ -178,15 +164,34 @@ _STORE: MeetingMemoryStore | SupabaseMeetingMemoryStore | None = None
 _STORE_KEY: tuple[str, str, str] | None = None
 
 
+def _streamlit_secret(name: str) -> str:
+    try:
+        import streamlit as st
+        return str(st.secrets.get(name, "")).strip()
+    except Exception:
+        return ""
+
+
 def get_memory_store(
     supabase_url: str | None = None,
     supabase_key: str | None = None,
     supabase_table: str | None = None,
 ) -> MeetingMemoryStore | SupabaseMeetingMemoryStore:
     global _STORE, _STORE_KEY
-    url = (supabase_url or os.getenv("SUPABASE_URL", "")).strip()
-    key = (supabase_key or os.getenv("SUPABASE_SERVICE_KEY", "") or os.getenv("SUPABASE_KEY", "")).strip()
-    table = (supabase_table or os.getenv("SUPABASE_TABLE", DEFAULT_SUPABASE_TABLE)).strip()
+    url = (supabase_url or os.getenv("SUPABASE_URL", "") or _streamlit_secret("SUPABASE_URL")).strip()
+    key = (
+        supabase_key
+        or os.getenv("SUPABASE_SERVICE_KEY", "")
+        or os.getenv("SUPABASE_KEY", "")
+        or _streamlit_secret("SUPABASE_SERVICE_KEY")
+        or _streamlit_secret("SUPABASE_KEY")
+    ).strip()
+    table = (
+        supabase_table
+        or os.getenv("SUPABASE_TABLE", "")
+        or _streamlit_secret("SUPABASE_TABLE")
+        or DEFAULT_SUPABASE_TABLE
+    ).strip()
     store_key = (url, key, table)
     if _STORE is not None and _STORE_KEY == store_key:
         return _STORE
