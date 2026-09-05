@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
 import streamlit as st
 from meetinglens_auth import require_user
 
@@ -51,6 +53,34 @@ with right:
         st.success("Hosted Memory Vault is configured. Use the connection test above to validate the table from this deployment.")
     else:
         st.info("The app is currently using runtime JSON memory. Add SUPABASE_URL + SUPABASE_SERVICE_KEY in Streamlit Secrets for durable hosted storage.")
+
+st.divider()
+st.subheader("Validated real-audio baseline")
+benchmark_path = Path("benchmarks/results/ami_es2002a_tiny_60s.json")
+if benchmark_path.exists():
+    try:
+        benchmark = json.loads(benchmark_path.read_text(encoding="utf-8"))
+        b1, b2, b3, b4, b5 = st.columns(5)
+        b1.metric("Audio", f"{benchmark.get('sample_seconds', 0)} sec")
+        b2.metric("Model", benchmark.get("model_size", "unknown"))
+        b3.metric("Runtime", f"{benchmark.get('elapsed_seconds', 0)} sec")
+        b4.metric("Transcript segments", benchmark.get("segments", 0))
+        b5.metric("AI candidates", benchmark.get("decision_candidates", 0) + benchmark.get("action_candidates", 0))
+        st.markdown(
+            f"<div class='card'><strong>AMI ES2002a · real transcription smoke test passed</strong>"
+            f"<div class='small'>{benchmark.get('audio_size_mb', 0)} MB sample · "
+            f"{benchmark.get('decision_candidates', 0)} decision candidates · "
+            f"{benchmark.get('action_candidates', 0)} action candidates · "
+            f"diarization requested: {benchmark.get('diarization_requested', False)}.</div></div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("This validates the real Whisper → transcript → extraction/ranker path. It does not count as a diarization benchmark because diarization was intentionally disabled for this run.")
+        with st.expander("Benchmark report"):
+            st.code(json.dumps(benchmark, indent=2), language="json")
+    except Exception as exc:
+        st.warning(f"Benchmark baseline exists but could not be read: {exc}")
+else:
+    st.info("No committed real-audio benchmark baseline was found.")
 
 st.divider()
 st.subheader("Deployment checklist")
