@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from datetime import datetime, timezone
 import os
 import re
 import tempfile
@@ -379,6 +380,7 @@ def transcribe_audio(
             "participants": [{"name": "Speaker 1", "talk_pct": 100}],
             "segments": segments,
             "source": "audio",
+            "analyzed_at": datetime.now(timezone.utc).isoformat(),
             "diarization_status": diarization_status,
         }
         if diarization_meta:
