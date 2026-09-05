@@ -6,19 +6,17 @@
 
 ## Current product
 
-MeetingLens is shipped as **one Streamlit application** so transcription, intelligence, review, memory, and the executive workspace deploy together.
-
-### Product flow
+MeetingLens ships as **one Streamlit application** so transcription, intelligence, review, memory, and the executive workspace deploy together.
 
 ```text
 Meeting audio
     |
     +--> faster-whisper -------------------------+
     |                                            |
-    +--> optional pyannote speaker diarization --+--> aligned transcript
+    +--> optional pyannote diarization ----------+--> aligned transcript
                                                      |
                                                      +--> sentiment
-                                                     +--> deterministic high-precision extraction
+                                                     +--> high-precision rules
                                                      +--> AMI-trained candidate ranking
                                                      +--> owner + due-date extraction
                                                      +--> risk signals
@@ -26,16 +24,21 @@ Meeting audio
                                                      v
                                                  Meeting JSON
                                                      |
-                   +---------------------------------+------------------+
-                   |                                 |                  |
-                   v                                 v                  v
-             Main dashboard                   Speaker Review      Memory Vault
-                                                                        |
-                                                                        +--> search
-                                                                        +--> recurring blockers
-                                                                        +--> Decision Drift
-                                                                        +--> execution accountability
-                                                                        +--> topic intelligence
+              +----------------------+--------------+------------------+
+              |                      |                                 |
+              v                      v                                 v
+        Main dashboard         Speaker Review                    AI Review Queue
+                                                                       |
+                                                                       v
+                                                               confirmed memory
+                                                                       |
+                                                                       v
+                                                                  Memory Vault
+                                                                       |
+                             +----------------+-------------------------+----------------+
+                             |                |                         |                |
+                             v                v                         v                v
+                        hybrid search   recurring blockers        Decision Drift   execution tracking
 ```
 
 ## Main workspace
@@ -43,12 +46,12 @@ Meeting audio
 - Executive meeting overview
 - Clarity / meeting-health signals
 - Decisions, risks, ownership, and key moments
-- AI candidate-review queue for uncertain Decision/Action evidence
+- AI candidate-review preview
 - Search inside the current meeting
 - Sentiment and participation analytics
 - Direct handoff from analyzed audio or a stored meeting
 
-The dashboard now uses the meeting selected in the current session instead of forcing the built-in demo after analysis.
+The dashboard uses the meeting selected/analyzed in the current session rather than forcing the built-in demo.
 
 ## Real audio analysis
 
@@ -57,15 +60,18 @@ Open **Analyze Audio** from the Streamlit navigation.
 - MP3 / WAV / M4A / MP4 / WEBM / MPEG upload
 - `faster-whisper` English transcription on CPU
 - VAD + timestamps
-- Segment sentiment
+- cached Whisper model instances to avoid reloading the model on every analysis
+- segment sentiment
 - Decision extraction with timestamped evidence
 - Action extraction with owner and due-date detection
 - Risk extraction and severity
-- Optional automatic speaker diarization
-- AI candidate ranking for Decision and Action evidence
-- Save to Memory Vault
-- Open the analyzed meeting directly in the full dashboard
-- Download meeting JSON
+- optional automatic speaker diarization
+- AMI-trained Decision/Action candidate ranking
+- save to Memory Vault
+- open directly in the full dashboard
+- download meeting JSON
+
+The Streamlit upload limit is capped at **100 MB** for the free deployment.
 
 ## Automatic speaker diarization
 
@@ -97,25 +103,57 @@ MeetingLens records detected speakers, speaker turns, direct-overlap coverage, f
 
 ## Speaker Review
 
-**Speaker Review** lets the user rename or correct speaker labels. A correction recomputes participation, speaking balance, action ownership, and the meeting intelligence output.
+**Speaker Review** lets the user rename or correct speaker labels. A correction recomputes participation, speaking balance, action ownership, and meeting intelligence.
+
+## AI Review Queue
+
+Open **AI Review** after an analyzed meeting.
+
+The AMI-trained rankers surface likely Decision and Action evidence, but MeetingLens does **not** silently promote ambiguous candidates. The review workflow supports:
+
+- confirm Decision candidate
+- confirm Action candidate
+- reject candidate
+- persistent review history
+- confirmed Action owner initialized from the speaker
+- save reviewed meeting back to Memory Vault
+- open reviewed meeting directly in the main dashboard
+
+This keeps the product human-in-the-loop while still benefiting from learned ranking.
 
 ## Cross-meeting Memory Intelligence
-
-The Memory Vault now has a runtime persistence layer in `meetinglens_memory_store.py` rather than being only a browser-session list.
 
 Memory Intelligence supports:
 
 - import/export of MeetingLens JSON
 - automatic deduplication with meeting fingerprints
-- search across meetings with source + timestamp evidence
+- **hybrid word + character TF-IDF retrieval** across meetings
+- source meeting + timestamp evidence
 - recurring blocker clustering
 - Decision Drift detection
 - execution accountability across meetings
 - missing owner/deadline flags
+- action lifecycle editing: `Open / In progress / Blocked / Done`
+- persistent owner/deadline corrections
 - topic-frequency index
-- open a stored meeting directly in the main dashboard
+- open any stored meeting directly in the dashboard
 
-The JSON runtime store survives browser sessions while the deployment instance remains alive. **Streamlit Community Cloud can recreate its filesystem after a reboot or redeploy**, so exporting the Memory Vault remains the portable backup until a hosted database is connected.
+### Memory backends
+
+MeetingLens has two backends behind the same interface:
+
+1. **runtime JSON fallback** — works with zero external configuration and survives browser sessions while the Streamlit instance remains alive;
+2. **Supabase backend** — durable hosted storage across instance restarts/redeploys.
+
+To enable Supabase, run `supabase_schema.sql` once in Supabase SQL Editor, then add these to Streamlit Secrets:
+
+```toml
+SUPABASE_URL = "https://your-project.supabase.co"
+SUPABASE_SERVICE_KEY = "your_server_side_service_role_key"
+SUPABASE_TABLE = "meetinglens_meetings"
+```
+
+The service-role key is used server-side only. The repository intentionally creates no public/anon table policy.
 
 ## AMI training and evaluation
 
@@ -126,38 +164,32 @@ pip install -r requirements-training.txt
 python -m training.run_ami_training
 ```
 
-The dataset builder separates:
+The dataset builder separates gold evidence from weak research labels and uses meeting-level train/validation/test groups to prevent leakage.
 
-- gold evidence from AMI extractive/abstractive summary links
-- weak auxiliary labels used for research
-- meeting-level train / validation / test groups to prevent leakage
-
-### Why the production formulation changed
+### Production formulation
 
 A global utterance classifier was a poor fit for Decision detection because Decision evidence is sparse inside long meetings. MeetingLens therefore moved from “classify every utterance” to **rank the most useful candidate segments inside each meeting**.
 
-The reviewed candidate rankers are trained on transcript text only with within-meeting negative sampling.
+The reviewed candidate rankers use transcript text only with within-meeting negative sampling.
 
-Current validated ranking results on the held-out AMI meeting split:
+Current validated held-out AMI ranking results:
 
 | Event | Hit@5 | Hit@10 | Hit@20 |
 |---|---:|---:|---:|
 | Decision | 68.0% | 80.0% | 88.0% |
 | Action | 77.8% | — | 94.4% |
 
-These rankers are **review-first**, not silent auto-confirmation models. Deterministic high-precision rules continue to produce confirmed Decision/Action items; the rankers surface additional evidence in the UI for human review.
-
-`Risk` remains a hybrid/rule-oriented signal because the current transcript-only learned model did not outperform the high-precision deterministic rules enough to justify promotion.
+`Risk` remains rule/hybrid-oriented because the current learned transcript-only detector did not justify replacing the high-precision deterministic rules.
 
 ## Model promotion
 
-GitHub Actions trains and evaluates the candidate rankers. A quality gate must pass before the reviewed `decision_ranker.joblib` and `action_ranker.joblib` artifacts are promoted into:
+GitHub Actions trains and evaluates the candidate rankers. A quality gate must pass before `decision_ranker.joblib` and `action_ranker.joblib` are promoted into:
 
 ```text
 artifacts/meeting_candidate_rankers/
 ```
 
-The app loads these promoted artifacts through `meetinglens_candidate_ranker.py`. If artifacts are absent or fail to load, the application keeps working with deterministic extraction.
+The app loads them through `meetinglens_candidate_ranker.py`. If promoted artifacts are missing or fail to load, deterministic extraction remains available.
 
 ## Important files
 
@@ -167,12 +199,15 @@ meetinglens_pipeline.py             transcription + intelligence pipeline
 meetinglens_candidate_ranker.py     promoted Decision/Action ranker runtime
 meetinglens_diarization.py          speaker diarization + timestamp alignment
 meetinglens_event_model.py          research/production detector loader
-meetinglens_intelligence.py         search, drift, blockers, execution analytics
-meetinglens_memory_store.py         runtime-persistent Memory Vault backend
+meetinglens_intelligence.py         retrieval, drift, blockers, execution analytics
+meetinglens_memory_store.py         JSON + optional Supabase Memory Vault backend
+meetinglens_review.py               confirm/reject AI candidate operations
+supabase_schema.sql                 durable Memory Vault schema
 
 pages/1_Analyze_Audio.py            audio analysis workflow
-pages/2_Memory_Intelligence.py      cross-meeting organizational memory
+pages/2_Memory_Intelligence.py      cross-meeting memory + execution tracking
 pages/3_Speaker_Review.py           speaker correction workflow
+pages/4_AI_Review.py                human-in-the-loop candidate confirmation
 
 training/ami_dataset.py             AMI NXT/XML -> gold/weak training rows
 training/train_baseline.py          multiclass research baseline
@@ -180,11 +215,6 @@ training/train_event_detectors.py   annotation-assisted research detectors
 training/train_production_detectors.py transcript-only detector benchmark
 training/train_candidate_rankers.py meeting-level Decision/Action rankers
 training/run_ami_training.py        end-to-end AMI training pipeline
-
-requirements.txt                    deployed app dependencies
-requirements-diarization.txt        optional pyannote runtime
-requirements-training.txt           AMI training dependencies
-requirements-semantic.txt           semantic-model research dependencies
 ```
 
 ## Run locally
@@ -197,7 +227,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-For automatic speaker diarization also install:
+For automatic speaker diarization:
 
 ```bash
 pip install -r requirements-diarization.txt
@@ -205,7 +235,7 @@ pip install -r requirements-diarization.txt
 
 ## Deployment
 
-Target deployment: **Streamlit Community Cloud**
+Target: **Streamlit Community Cloud**
 
 - repository: `chaima-menouar/meetinglens-ai`
 - branch: `main`
@@ -218,31 +248,30 @@ The standard deployment intentionally does not force the heavy pyannote runtime.
 - Python
 - Streamlit
 - faster-whisper
-- pyannote.audio (optional diarization)
+- pyannote.audio (optional)
 - scikit-learn
 - Pandas
 - Plotly
 - VADER Sentiment
+- Supabase (optional durable memory)
 - GitHub Actions
 - Streamlit Community Cloud
 
 ## Current limitations
 
-- Current transcription workflow is English-first.
-- Automatic diarization requires the optional pyannote runtime and Hugging Face access.
-- Streamlit Community Cloud runtime storage is not guaranteed across instance recreation; a hosted database is the next persistence upgrade.
-- Decision/Action candidate rankers surface likely evidence but do not replace human confirmation for ambiguous language.
-- Decision Drift currently uses lexical/topic similarity and change/negation signals rather than a dedicated contradiction model.
+- transcription is English-first in the current workflow;
+- automatic diarization requires the optional pyannote runtime and Hugging Face access;
+- runtime JSON storage is not guaranteed across Streamlit instance recreation unless Supabase is configured;
+- Decision Drift is still based on lexical/topic similarity plus change/negation signals rather than a dedicated contradiction model;
+- a real multi-speaker end-to-end audio benchmark is still needed for the deployed Whisper + diarization path.
 
 ## Next production milestones
 
-1. hosted durable meeting storage (database-backed Memory Vault)
-2. real multi-speaker audio benchmark for Whisper + diarization alignment
-3. stronger semantic cross-meeting retrieval
-4. contradiction-aware Decision Drift
-5. action lifecycle editing (open / done / blocked) and persistent status
-6. authentication once durable multi-user storage is introduced
+1. run a real multi-speaker audio benchmark on the deployed environment;
+2. strengthen Decision Drift with contradiction-aware modeling;
+3. add authentication when multi-user hosted storage is enabled;
+4. add organization/workspace boundaries once multi-user data exists.
 
 ---
 
-**MeetingLens AI** — meeting audio → speakers → evidence → decisions → ownership → organizational memory.
+**MeetingLens AI** — meeting audio → speakers → evidence → review → decisions → execution → organizational memory.
