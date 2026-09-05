@@ -40,11 +40,7 @@ def _clean(text: str) -> str:
 
 
 def _ml_scores(text: str) -> dict[str, dict[str, Any]]:
-    """Return reviewed production-model scores when promoted artifacts are present.
-
-    Model loading is optional and lazy. A deployment without artifacts or without the
-    training runtime keeps using deterministic rules with no behavior regression.
-    """
+    """Return reviewed threshold-model scores when promoted artifacts are present."""
     try:
         from meetinglens_event_model import get_production_event_detectors
 
@@ -54,7 +50,26 @@ def _ml_scores(text: str) -> dict[str, dict[str, Any]]:
         return {}
 
 
-def _event_signal(text: str, event: str, scores: dict[str, dict[str, Any]] | None = None) -> tuple[bool, str, float | None]:
+def _rank_candidates(
+    segments: list[dict[str, Any]],
+    event: str,
+    top_k: int | None = None,
+) -> list[dict[str, Any]]:
+    """Rank transcript segments inside one meeting when promoted rankers exist."""
+    try:
+        from meetinglens_candidate_ranker import get_candidate_rankers
+
+        rankers = get_candidate_rankers()
+        return rankers.rank_segments(segments, event, top_k=top_k) if rankers.available else []
+    except Exception:
+        return []
+
+
+def _event_signal(
+    text: str,
+    event: str,
+    scores: dict[str, dict[str, Any]] | None = None,
+) -> tuple[bool, str, float | None]:
     patterns = _EVENT_PATTERNS[event]
     if _matches(text, patterns):
         return True, "rule", None
@@ -105,16 +120,24 @@ def _dedupe(items: list[dict[str, Any]], field: str) -> list[dict[str, Any]]:
     return out
 
 
-def _extract_decisions(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _rank_map(rankings: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
+    return {int(item["segment_index"]): item for item in rankings}
+
+
+def _extract_decisions(
+    segments: list[dict[str, Any]],
+    rankings: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     out = []
-    for item in segments:
+    ranked = _rank_map(rankings or [])
+    for index, item in enumerate(segments):
         text = _clean(item.get("text", ""))
         if not text:
             continue
         scores = _ml_scores(text)
         detected, source, probability = _event_signal(text, "decision", scores)
         if detected:
-            out.append({
+            row = {
                 "title": text,
                 "detail": f"Evidence: {item.get('speaker','Speaker')} at {item.get('timestamp','00:00')}",
                 "confidence": _confidence(text, _DECISION_PATTERNS, probability),
@@ -122,20 +145,29 @@ def _extract_decisions(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "minute": item.get("minute", 0),
                 "timestamp": item.get("timestamp", "00:00"),
                 "speaker": item.get("speaker", "Speaker"),
-            })
+            }
+            if index in ranked:
+                row["candidate_rank"] = int(ranked[index]["rank"])
+                row["candidate_score"] = float(ranked[index]["score"])
+            out.append(row)
+    out.sort(key=lambda row: (row.get("candidate_rank", 10_000), -float(row.get("confidence", 0.0))))
     return _dedupe(out, "title")[:8]
 
 
-def _extract_actions(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _extract_actions(
+    segments: list[dict[str, Any]],
+    rankings: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     out = []
-    for item in segments:
+    ranked = _rank_map(rankings or [])
+    for index, item in enumerate(segments):
         text = _clean(item.get("text", ""))
         if not text:
             continue
         scores = _ml_scores(text)
         detected, source, probability = _event_signal(text, "action", scores)
         if detected:
-            out.append({
+            row = {
                 "task": text,
                 "owner": item.get("speaker") or "Unassigned",
                 "due": _due(text),
@@ -144,7 +176,12 @@ def _extract_actions(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "signal_source": source,
                 "minute": item.get("minute", 0),
                 "timestamp": item.get("timestamp", "00:00"),
-            })
+            }
+            if index in ranked:
+                row["candidate_rank"] = int(ranked[index]["rank"])
+                row["candidate_score"] = float(ranked[index]["score"])
+            out.append(row)
+    out.sort(key=lambda row: (row.get("candidate_rank", 10_000), -float(row.get("confidence", 0.0))))
     return _dedupe(out, "task")[:10]
 
 
@@ -168,6 +205,36 @@ def _extract_risks(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "speaker": item.get("speaker", "Speaker"),
             })
     return _dedupe(out, "title")[:8]
+
+
+def _review_candidates(
+    segments: list[dict[str, Any]],
+    rankings: list[dict[str, Any]],
+    event: str,
+) -> list[dict[str, Any]]:
+    patterns = _EVENT_PATTERNS[event]
+    output: list[dict[str, Any]] = []
+    for ranking in rankings:
+        index = int(ranking["segment_index"])
+        if index < 0 or index >= len(segments):
+            continue
+        segment = segments[index]
+        text = _clean(segment.get("text", ""))
+        if not text or _matches(text, patterns):
+            continue
+        output.append({
+            "text": text,
+            "speaker": segment.get("speaker", "Speaker"),
+            "timestamp": segment.get("timestamp", "00:00"),
+            "minute": segment.get("minute", 0),
+            "rank": int(ranking["rank"]),
+            "score": float(ranking["score"]),
+            "event": event,
+            "status": "Needs review",
+            "signal_source": "candidate-ranker",
+            "model_version": ranking.get("version", "unknown"),
+        })
+    return output
 
 
 def _summary(decisions: list[dict[str, Any]], actions: list[dict[str, Any]], risks: list[dict[str, Any]]) -> str:
@@ -205,10 +272,22 @@ def refresh_intelligence(meeting: dict[str, Any]) -> dict[str, Any]:
     for s in segments:
         s["kind"] = _kind(s.get("text", ""))
         s["sentiment"] = s.get("sentiment") or _sentiment(s.get("text", ""))
+
+    decision_rankings = _rank_candidates(segments, "decision", top_k=10)
+    action_rankings = _rank_candidates(segments, "action", top_k=5)
+
     meeting["participants"] = recompute_participants(segments)
-    meeting["decisions"] = _extract_decisions(segments)
-    meeting["actions"] = _extract_actions(segments)
+    meeting["decisions"] = _extract_decisions(segments, decision_rankings)
+    meeting["actions"] = _extract_actions(segments, action_rankings)
     meeting["risks"] = _extract_risks(segments)
+    meeting["decision_candidates"] = _review_candidates(segments, decision_rankings, "decision")
+    meeting["action_candidates"] = _review_candidates(segments, action_rankings, "action")
+    meeting["candidate_ranking"] = {
+        "available": bool(decision_rankings or action_rankings),
+        "decision_candidates_ranked": len(decision_rankings),
+        "action_candidates_ranked": len(action_rankings),
+        "mode": "review-first",
+    }
     meeting["summary"] = _summary(meeting["decisions"], meeting["actions"], meeting["risks"])
     return meeting
 
