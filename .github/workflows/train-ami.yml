@@ -56,7 +56,7 @@ jobs:
           if v2_path.exists():
               m = json.loads(v2_path.read_text())
               lines += [
-                  '## V2 event-specific detectors',
+                  '## V2 annotation-assisted detectors',
                   f"- Macro event F1: {m['macro_event_f1']:.4f}",
                   f"- Macro event AP: {m['macro_event_average_precision']:.4f}",
               ]
@@ -66,6 +66,24 @@ jobs:
                       f"recall={values['recall']:.4f}, AP={values['average_precision']:.4f}, "
                       f"threshold={values['threshold']:.4f}"
                   )
+              lines += ['', '> V2 uses AMI dialogue-act annotations and is an offline research upper bound, not a production score.', '']
+
+          prod_path = Path('artifacts/meeting_event_detectors_production/metrics.json')
+          if prod_path.exists():
+              m = json.loads(prod_path.read_text())
+              lines += [
+                  '## Production-safe transcript-only detectors',
+                  f"- Macro event F1: {m['macro_event_f1']:.4f}",
+                  f"- Macro event AP: {m['macro_event_average_precision']:.4f}",
+              ]
+              for event, values in m['events'].items():
+                  lines.append(
+                      f"- {event}: F1={values['f1']:.4f}, precision={values['precision']:.4f}, "
+                      f"recall={values['recall']:.4f}, AP={values['average_precision']:.4f}, "
+                      f"threshold={values['threshold']:.4f}"
+                  )
+              lines += ['', '> Production-safe metrics use transcript text only, matching the information available after Whisper transcription.', '']
+
           Path('summary.md').write_text('\n'.join(lines) + '\n')
           PY
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
@@ -78,5 +96,6 @@ jobs:
           path: |
             artifacts/meeting_event_baseline/
             artifacts/meeting_event_detectors_v2/
+            artifacts/meeting_event_detectors_production/
             data/processed/ami_events.csv
           retention-days: 14
