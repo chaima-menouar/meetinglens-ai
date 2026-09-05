@@ -90,6 +90,19 @@ class MeetingMemoryStore:
     def clear(self) -> None:
         self.save([])
 
+    def healthcheck(self) -> dict[str, Any]:
+        try:
+            meetings = self.load()
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            return {
+                "ok": True,
+                "backend": self.backend,
+                "meeting_count": len(meetings),
+                "detail": "Runtime JSON store is readable.",
+            }
+        except Exception as exc:
+            return {"ok": False, "backend": self.backend, "meeting_count": 0, "detail": str(exc)}
+
 
 class SupabaseMeetingMemoryStore:
     """Hosted Memory Vault through the Supabase REST API.
@@ -158,6 +171,25 @@ class SupabaseMeetingMemoryStore:
 
     def clear(self) -> None:
         self._request("DELETE", {"meeting_id": "not.is.null"}, prefer="return=minimal")
+
+    def healthcheck(self) -> dict[str, Any]:
+        try:
+            rows = self._request("GET", {"select": "meeting_id", "limit": "1"}) or []
+            return {
+                "ok": True,
+                "backend": self.backend,
+                "meeting_count": None,
+                "detail": f"Supabase table '{self.table}' is reachable.",
+                "sample_rows": len(rows),
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "backend": self.backend,
+                "meeting_count": None,
+                "detail": str(exc),
+                "sample_rows": 0,
+            }
 
 
 _STORE: MeetingMemoryStore | SupabaseMeetingMemoryStore | None = None
