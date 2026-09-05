@@ -29,7 +29,6 @@ def build_pipeline() -> Pipeline:
         class_weight="balanced",
         C=2.0,
         solver="liblinear",
-        multi_class="ovr",
         random_state=42,
     )
     return Pipeline([("features", features), ("classifier", classifier)])
