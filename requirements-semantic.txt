@@ -1,0 +1,2 @@
+-r requirements-training.txt
+sentence-transformers>=3.0,<6
