@@ -28,7 +28,7 @@ def build_pipeline() -> Pipeline:
         max_iter=2500,
         class_weight="balanced",
         C=2.0,
-        solver="liblinear",
+        solver="lbfgs",
         random_state=42,
     )
     return Pipeline([("features", features), ("classifier", classifier)])
