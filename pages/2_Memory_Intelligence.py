@@ -22,11 +22,24 @@ html,body,[class*=css]{font-family:Inter,system-ui,sans-serif}.stApp{background:
 </style>
 """, unsafe_allow_html=True)
 
-store = get_memory_store()
+
+def _secret(name: str) -> str:
+    try:
+        return str(st.secrets.get(name, "")).strip()
+    except Exception:
+        return ""
+
+
+store = get_memory_store(
+    supabase_url=_secret("SUPABASE_URL"),
+    supabase_key=_secret("SUPABASE_SERVICE_KEY") or _secret("SUPABASE_KEY"),
+    supabase_table=_secret("SUPABASE_TABLE") or None,
+)
 if "meeting_vault" not in st.session_state:
     st.session_state.meeting_vault = store.load()
 
 st.markdown("""<div class='hero'><div class='eyebrow'>Cross-meeting intelligence</div><h1>Turn meetings into organizational memory.</h1><p class='small'>Search across meetings, surface repeated blockers, detect decision drift, and expose execution gaps before they disappear into another meeting.</p></div>""", unsafe_allow_html=True)
+st.caption(f"Memory backend · {getattr(store, 'backend', 'unknown')}")
 
 st.write("")
 uploaded = st.file_uploader("Import meeting JSON or a Meeting Vault", type=["json"], accept_multiple_files=True)
@@ -46,8 +59,11 @@ if uploaded:
         except Exception as exc:
             st.error(f"Could not import {getattr(f, 'name', 'file')}: {exc}")
     if len(merged) > before:
-        st.session_state.meeting_vault = store.replace_all(merged)
-        st.success(f"Added {len(merged) - before} meeting(s) to the vault.")
+        try:
+            st.session_state.meeting_vault = store.replace_all(merged)
+            st.success(f"Added {len(merged) - before} meeting(s) to the vault.")
+        except Exception as exc:
+            st.error(f"Could not persist imported meetings: {exc}")
 
 vault = st.session_state.meeting_vault
 stats = memory_stats(vault)
@@ -62,12 +78,15 @@ st.caption("Vault: " + " · ".join(m.get("title", "Meeting") for m in vault))
 
 s1, s2 = st.columns([1.5, .5])
 with s1:
-    selected_title = st.selectbox("Open a stored meeting", [m.get("title", f"Meeting {i+1}") for i, m in enumerate(vault)])
+    selected_index = st.selectbox(
+        "Open a stored meeting",
+        options=list(range(len(vault))),
+        format_func=lambda i: vault[i].get("title", f"Meeting {i + 1}"),
+    )
 with s2:
     st.write("")
     st.write("")
     if st.button("Open in dashboard", use_container_width=True):
-        selected_index = [m.get("title", f"Meeting {i+1}") for i, m in enumerate(vault)].index(selected_title)
         st.session_state.dashboard_meeting = vault[selected_index]
         st.session_state.current_meeting = vault[selected_index]
         st.switch_page("app.py")
@@ -101,16 +120,53 @@ with t2:
 with t3:
     execution = action_accountability(vault)
     attention = [x for x in execution if x["needs_attention"]]
-    e1, e2, e3 = st.columns(3)
+    e1, e2, e3, e4 = st.columns(4)
     e1.metric("Tracked actions", len(execution))
     e2.metric("Needs attention", len(attention))
     e3.metric("Owned + dated", len(execution) - len(attention))
+    e4.metric("Done", sum(1 for x in execution if x["status"].lower() == "done"))
     if not execution:
         st.info("No action items are stored yet.")
     else:
         st.dataframe(execution, use_container_width=True, hide_index=True, column_order=["meeting", "task", "owner", "due", "status", "missing", "timestamp"])
         if attention:
             st.warning(f"{len(attention)} action item(s) are missing an owner, a deadline, or both.")
+
+        st.markdown("#### Update execution state")
+        action_choice = st.selectbox(
+            "Action item",
+            options=list(range(len(execution))),
+            format_func=lambda i: f"{execution[i]['meeting']} · {execution[i]['task'][:80]}",
+            key="execution_action_choice",
+        )
+        selected_action = execution[action_choice]
+        with st.form("execution_update_form"):
+            f1, f2, f3 = st.columns(3)
+            with f1:
+                owner = st.text_input("Owner", value=selected_action["owner"])
+            with f2:
+                due = st.text_input("Deadline", value=selected_action["due"])
+            with f3:
+                statuses = ["Open", "In progress", "Blocked", "Done"]
+                current_status = selected_action["status"] if selected_action["status"] in statuses else "Open"
+                status = st.selectbox("Status", statuses, index=statuses.index(current_status))
+            submitted = st.form_submit_button("Save action update", use_container_width=True)
+        if submitted:
+            mi = int(selected_action["meeting_index"])
+            ai = int(selected_action["action_index"])
+            updated = list(vault)
+            updated[mi]["actions"][ai]["owner"] = owner.strip() or "Unassigned"
+            updated[mi]["actions"][ai]["due"] = due.strip() or "Not stated"
+            updated[mi]["actions"][ai]["status"] = status
+            try:
+                st.session_state.meeting_vault = store.replace_all(updated)
+                if st.session_state.get("current_meeting", {}).get("meeting_id") == updated[mi].get("meeting_id"):
+                    st.session_state.current_meeting = updated[mi]
+                    st.session_state.dashboard_meeting = updated[mi]
+                st.success("Action state saved.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not save action update: {exc}")
 
 with t4:
     topics = build_topic_index(vault)
@@ -121,8 +177,14 @@ st.divider()
 vault_json = json.dumps({"meetings": vault}, indent=2, ensure_ascii=False)
 st.download_button("Export Memory Vault", vault_json, "meetinglens_memory_vault.json", "application/json", use_container_width=True)
 if st.button("Clear Memory Vault", use_container_width=True):
-    store.clear()
-    st.session_state.meeting_vault = []
-    st.rerun()
+    try:
+        store.clear()
+        st.session_state.meeting_vault = []
+        st.rerun()
+    except Exception as exc:
+        st.error(f"Could not clear Memory Vault: {exc}")
 
-st.caption("Memory Vault is persisted in the running deployment and survives browser sessions. Streamlit Community Cloud can recreate its filesystem after a reboot/redeploy, so Export Memory Vault remains the portable backup until a hosted database is connected.")
+if getattr(store, "backend", "runtime-json") == "supabase":
+    st.caption("Memory Vault is using the configured Supabase backend for durable hosted storage.")
+else:
+    st.caption("Memory Vault is persisted in the running deployment and survives browser sessions. Streamlit Community Cloud can recreate its filesystem after a reboot/redeploy, so Export Memory Vault remains the portable backup until Supabase is configured.")
