@@ -36,9 +36,7 @@ Open **Analyze Audio** from the Streamlit page navigation.
 
 ### Automatic speaker diarization
 
-MeetingLens now contains an optional diarization layer based on **pyannote Community-1**.
-
-When enabled, the pipeline runs:
+MeetingLens contains an optional diarization layer based on **pyannote Community-1**.
 
 ```text
 audio
@@ -57,28 +55,29 @@ audio
            speaker-aware meeting intelligence
 ```
 
-The diarization dependency is intentionally separated from the light public build because `pyannote.audio` and its ML runtime are much heavier than the standard Streamlit deployment.
-
-For a local/worker environment:
+Install the optional runtime locally/worker-side:
 
 ```bash
 pip install -r requirements-diarization.txt
 ```
 
-Then configure `HF_TOKEN` either as an environment variable or in Streamlit Secrets. The Hugging Face account must also accept the usage conditions for `pyannote/speaker-diarization-community-1`.
+Then configure `HF_TOKEN` in the environment or Streamlit Secrets. If diarization cannot run, transcription remains usable and MeetingLens falls back to Speaker Review.
 
-The Analyze Audio page lets the user set minimum and maximum expected speakers. If diarization cannot run, transcription still succeeds and MeetingLens falls back to Speaker Review instead of failing the whole meeting analysis.
+### Diarization quality diagnostics
+
+Automatic diarization is not accepted blindly. MeetingLens records:
+
+- number of detected speakers
+- number of diarization turns
+- transcript coverage by real speaker overlap
+- nearest-turn fallbacks
+- quality state: high / medium / review
+
+Low-quality diarization is routed to Speaker Review rather than silently treated as ground truth.
 
 ### Speaker review
 
-Open **Speaker Review** to rename or correct speaker labels after transcription/diarization.
-
-The review workflow automatically recomputes:
-
-- speaking-time balance
-- participant percentages
-- action ownership
-- decision / action / risk intelligence
+Open **Speaker Review** to rename or correct speaker labels after transcription/diarization. The review recomputes speaking balance, participant percentages, action ownership, and meeting-event intelligence.
 
 ### Cross-meeting intelligence
 
@@ -94,6 +93,76 @@ Open **Memory Intelligence** to analyze multiple meetings together.
 
 The Memory Vault is session-based on Streamlit Community Cloud. Export the vault JSON to keep a portable copy across restarts.
 
+## AMI meeting-event training track
+
+The product now includes a reproducible training path based on the **AMI Meeting Corpus manual annotations**. The official corpus provides manual NXT/XML transcripts, dialogue acts, summaries, and decision-related annotations under CC BY 4.0.
+
+Install training dependencies:
+
+```bash
+pip install -r requirements-training.txt
+```
+
+Run the complete pipeline:
+
+```bash
+python -m training.run_ami_training
+```
+
+That command performs:
+
+```text
+official AMI manual annotations
+          |
+          v
+NXT/XML parser + dialogue-act references
+          |
+          v
+MeetingLens event labels
+ decision / action / risk / other
+          |
+          v
+meeting-level train/test split
+          |
+          v
+TF-IDF word + character features
+          |
+          v
+balanced Logistic Regression baseline
+          |
+          v
+metrics.json + predictions + model.joblib
+```
+
+Generated data and model artifacts are intentionally ignored by Git. This prevents the public repository from shipping corpus data or large local model files.
+
+The baseline uses a **meeting-level split**, not a random utterance split, so transcript fragments from the same meeting cannot leak into both train and test sets.
+
+Current label construction is evidence-first:
+
+- AMI decision references and decision-like dialogue acts → `decision`
+- commit/directive/suggestion-like dialogue acts → `action`
+- lexical blocker/problem signals → weak `risk` labels
+- remaining dialogue acts → `other`
+
+This baseline is a benchmark, not the final classifier. Its purpose is to give us a measurable macro-F1 target before moving to a transformer model or richer context-window classifier.
+
+## Trained model integration
+
+`meetinglens_event_model.py` is already prepared to load a trained artifact from:
+
+```text
+artifacts/meeting_event_baseline/meeting_event_baseline.joblib
+```
+
+or from a custom path set with:
+
+```text
+MEETINGLENS_EVENT_MODEL=/path/to/model.joblib
+```
+
+The current public app keeps the heuristic extractor active until a trained artifact has been evaluated and approved.
+
 ## Architecture
 
 ```text
@@ -104,7 +173,7 @@ Meeting audio
     +--> optional pyannote --------+--> aligned speaker transcript
                                       |
                                       +--> sentiment
-                                      +--> decision extraction
+                                      +--> meeting-event model / fallback extraction
                                       +--> action + due-date extraction
                                       +--> risk extraction
                                       |
@@ -120,28 +189,29 @@ Meeting audio
                                       +--> recurring blockers
                                       +--> Decision Drift
                                       +--> topic intelligence
-                                      |
-                                      v
-                              One Streamlit product
 ```
 
-## Files
+## Important files
 
 ```text
-app.py                         main visual workspace
-meetinglens_pipeline.py        transcription + extraction + diarization integration
-meetinglens_diarization.py     pyannote speaker turns + Whisper timestamp alignment
-meetinglens_intelligence.py    cross-meeting intelligence
-requirements.txt               light/public application dependencies
-requirements-diarization.txt   optional automatic diarization runtime
-pages/1_Analyze_Audio.py       audio + automatic diarization workflow
-pages/2_Memory_Intelligence.py organizational memory
-pages/3_Speaker_Review.py      speaker correction + recomputation
+app.py                          main visual workspace
+meetinglens_pipeline.py         transcription + extraction + diarization integration
+meetinglens_diarization.py      pyannote speaker turns + Whisper alignment
+meetinglens_event_model.py      trained event-model loader
+meetinglens_intelligence.py     cross-meeting intelligence
+training/download_ami.py        official AMI annotation downloader
+training/ami_dataset.py         NXT/XML -> labeled examples
+training/train_baseline.py      leakage-safe baseline training + evaluation
+training/run_ami_training.py    end-to-end training command
+requirements.txt                light/public application dependencies
+requirements-diarization.txt    optional automatic diarization runtime
+requirements-training.txt       training dependencies
+pages/1_Analyze_Audio.py        audio + automatic diarization workflow
+pages/2_Memory_Intelligence.py  organizational memory
+pages/3_Speaker_Review.py       speaker correction + recomputation
 ```
 
 ## Run locally
-
-Light version:
 
 ```bash
 python -m venv .venv
@@ -150,16 +220,6 @@ python -m venv .venv
 pip install -r requirements.txt
 streamlit run app.py
 ```
-
-With automatic diarization:
-
-```bash
-pip install -r requirements-diarization.txt
-```
-
-Then set `HF_TOKEN` before starting Streamlit.
-
-The first run downloads the selected Whisper model and, when diarization is enabled, the pyannote model assets.
 
 ## Deploy
 
@@ -170,36 +230,38 @@ The first run downloads the selected Whisper model and, when diarization is enab
 5. Main file: `app.py`.
 6. Deploy.
 
-The standard `requirements.txt` deliberately keeps the public build light. Automatic diarization is designed to run in the optional diarization profile/local worker until the heavier runtime is validated against the free Streamlit resource limits.
+The public `requirements.txt` deliberately stays light. Automatic diarization and model training use separate dependency profiles.
 
 ## Stack
 
 - Python
 - Streamlit
 - faster-whisper
-- pyannote.audio (optional diarization profile)
+- pyannote.audio
+- scikit-learn
 - Pandas
 - Plotly
 - VADER Sentiment
-- GitHub
+- GitHub Actions
 - Streamlit Community Cloud
 
 ## Current limitations
 
 - English transcription only in the current workflow.
-- Automatic diarization requires the optional pyannote runtime and Hugging Face access token/model terms.
-- Decision/action/risk extraction is currently evidence-first heuristic extraction rather than a fine-tuned meeting-event model.
+- Automatic diarization requires the optional pyannote runtime and Hugging Face access.
+- The AMI-trained baseline still needs to be executed and evaluated on the downloaded corpus before replacing heuristic extraction.
+- `risk` labels are currently weakly supervised because AMI's strongest released annotations focus more directly on dialogue acts and decision discussion.
 - Memory Vault persistence is portable JSON/session state, not a production database yet.
 
-## Next model layer
+## Next research milestones
 
-The next research/model milestones are:
-
-- validate diarization on AMI Meeting Corpus
-- compute speaker diarization metrics
-- trained meeting-event classifier
+- execute AMI dataset build and baseline training
+- inspect label balance and annotation mapping
+- establish macro-F1 / per-class precision-recall benchmark
+- compare transformer/context-window model against baseline
+- activate trained classifier only if it improves validation performance
 - semantic embeddings for cross-meeting retrieval
-- stronger decision-reversal / drift model
+- stronger Decision Drift model
 - persistent meeting memory
 
 ---
