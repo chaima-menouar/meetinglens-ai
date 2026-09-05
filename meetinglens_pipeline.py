@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from functools import lru_cache
 import os
 import re
 import tempfile
@@ -292,6 +293,15 @@ def refresh_intelligence(meeting: dict[str, Any]) -> dict[str, Any]:
     return meeting
 
 
+@lru_cache(maxsize=2)
+def _get_whisper_model(model_size: str):
+    try:
+        from faster_whisper import WhisperModel
+    except Exception as exc:
+        raise RuntimeError("Audio transcription is unavailable because faster-whisper could not be loaded.") from exc
+    return WhisperModel(model_size, device="cpu", compute_type="int8")
+
+
 def transcribe_audio(
     uploaded_file: Any,
     model_size: str = "tiny.en",
@@ -300,18 +310,13 @@ def transcribe_audio(
     min_speakers: int | None = None,
     max_speakers: int | None = None,
 ) -> dict[str, Any]:
-    try:
-        from faster_whisper import WhisperModel
-    except Exception as exc:
-        raise RuntimeError("Audio transcription is unavailable because faster-whisper could not be loaded.") from exc
-
     suffix = Path(getattr(uploaded_file, "name", "meeting.wav")).suffix or ".wav"
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
         tmp.write(uploaded_file.getbuffer())
         audio_path = tmp.name
 
     try:
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
+        model = _get_whisper_model(model_size)
         whisper_segments, info = model.transcribe(
             audio_path,
             language="en",
