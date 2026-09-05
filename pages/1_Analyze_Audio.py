@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import streamlit as st
 
 from meetinglens_pipeline import transcribe_audio
@@ -14,10 +15,21 @@ html,body,[class*=css]{font-family:Inter,system-ui,sans-serif}.stApp{background:
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("""<div class='hero'><div class='eyebrow'>Audio intelligence pipeline</div><h1>Upload. Transcribe. Understand.</h1><p>Turn an English meeting recording into timestamped evidence, decisions, follow-up actions, risks, and a searchable meeting object.</p></div>""", unsafe_allow_html=True)
+st.markdown("""<div class='hero'><div class='eyebrow'>Audio intelligence pipeline</div><h1>Upload. Transcribe. Understand.</h1><p>Turn an English meeting recording into timestamped evidence, speaker-aware conversation turns, decisions, follow-up actions, risks, and a searchable meeting object.</p></div>""", unsafe_allow_html=True)
 
 if "meeting_vault" not in st.session_state:
     st.session_state.meeting_vault = []
+
+
+def get_hf_token() -> str:
+    token = os.getenv("HF_TOKEN", "").strip()
+    if token:
+        return token
+    try:
+        return str(st.secrets.get("HF_TOKEN", "")).strip()
+    except Exception:
+        return ""
+
 
 left, right = st.columns([1.1, .9])
 with left:
@@ -25,18 +37,49 @@ with left:
     if audio:
         st.audio(audio)
     model = st.selectbox("Whisper model", ["tiny.en", "base.en"], index=0, help="tiny.en is faster on free CPU. base.en is more accurate but heavier.")
-    analyze = st.button("Analyze meeting", type="primary", use_container_width=True, disabled=audio is None)
+
+    st.markdown("#### Speaker detection")
+    auto_diarize = st.toggle(
+        "Automatic speaker diarization",
+        value=False,
+        help="Uses pyannote Community-1 when the optional diarization environment is installed and HF_TOKEN is configured.",
+    )
+    min_speakers = max_speakers = None
+    if auto_diarize:
+        d1, d2 = st.columns(2)
+        with d1:
+            min_speakers = st.number_input("Minimum speakers", min_value=1, max_value=12, value=2, step=1)
+        with d2:
+            max_speakers = st.number_input("Maximum speakers", min_value=1, max_value=20, value=6, step=1)
+        if max_speakers < min_speakers:
+            st.warning("Maximum speakers must be greater than or equal to minimum speakers.")
+        if not get_hf_token():
+            st.warning("Automatic diarization needs HF_TOKEN in Streamlit Secrets or the environment. Transcription will still work and fall back to Speaker Review.")
+
+    analyze = st.button("Analyze meeting", type="primary", use_container_width=True, disabled=audio is None or (auto_diarize and max_speakers < min_speakers))
 
 with right:
-    st.markdown("""<div class='card'><span class='tag'>Current pipeline</span><p><strong>1 · Transcription</strong><br><span class='small'>faster-whisper on CPU with timestamps and VAD.</span></p><p><strong>2 · Conversation signals</strong><br><span class='small'>Sentiment plus decision, action, and risk extraction.</span></p><p><strong>3 · Memory-ready output</strong><br><span class='small'>The result can be added to the in-session Meeting Vault for cross-meeting analysis.</span></p></div>""", unsafe_allow_html=True)
-    st.info("Automatic multi-speaker diarization is not enabled in the free deployment yet. Audio is currently labeled as one speaker; speaker-aware analysis is the next model layer.")
+    st.markdown("""<div class='card'><span class='tag'>Current pipeline</span><p><strong>1 · Transcription</strong><br><span class='small'>faster-whisper on CPU with timestamps and VAD.</span></p><p><strong>2 · Speaker diarization</strong><br><span class='small'>Optional pyannote Community-1 speaker turns aligned to Whisper segments.</span></p><p><strong>3 · Conversation intelligence</strong><br><span class='small'>Sentiment plus decision, action, risk, owner, and due-date extraction.</span></p><p><strong>4 · Memory-ready output</strong><br><span class='small'>The meeting can be added to Memory Vault for cross-meeting analysis.</span></p></div>""", unsafe_allow_html=True)
+    if auto_diarize:
+        st.info("Automatic diarization is requested. If the optional pyannote runtime is unavailable, MeetingLens will keep the transcript and fall back safely to Speaker Review.")
+    else:
+        st.info("Speaker Review remains available after transcription. Enable automatic diarization when the pyannote runtime is configured.")
 
 if analyze and audio is not None:
     status = st.status("MeetingLens is processing the recording…", expanded=True)
     try:
         status.write("Loading speech model…")
-        result = transcribe_audio(audio, model_size=model)
-        status.write("Extracting decisions, actions, risks, and sentiment…")
+        result = transcribe_audio(
+            audio,
+            model_size=model,
+            diarize=auto_diarize,
+            hf_token=get_hf_token(),
+            min_speakers=int(min_speakers) if auto_diarize else None,
+            max_speakers=int(max_speakers) if auto_diarize else None,
+        )
+        if auto_diarize:
+            status.write("Aligning speaker turns with transcript timestamps…")
+        status.write("Extracting decisions, actions, risks, owners, and sentiment…")
         st.session_state.current_meeting = result
         status.update(label="Analysis complete", state="complete", expanded=False)
     except Exception as exc:
@@ -48,11 +91,28 @@ if meeting:
     st.divider()
     st.subheader(meeting.get("title", "Analyzed meeting"))
     st.caption(meeting.get("summary", ""))
-    c1, c2, c3, c4 = st.columns(4)
+
+    diarization_status = meeting.get("diarization_status", "speaker-review-needed")
+    if diarization_status == "automatic-complete":
+        st.success(f"Automatic diarization complete · {len(meeting.get('participants', []))} speakers detected")
+    elif diarization_status == "automatic-failed":
+        st.warning("Transcription completed, but automatic diarization could not run. Speaker Review can still be used.")
+        if meeting.get("diarization_error"):
+            with st.expander("Diarization technical detail"):
+                st.code(meeting["diarization_error"])
+    else:
+        st.info("Speaker labels are provisional. Use Speaker Review to rename or correct them.")
+
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Duration", f"{meeting.get('duration_min', 0)} min")
-    c2.metric("Decisions", len(meeting.get("decisions", [])))
-    c3.metric("Actions", len(meeting.get("actions", [])))
-    c4.metric("Risks", len(meeting.get("risks", [])))
+    c2.metric("Speakers", len(meeting.get("participants", [])))
+    c3.metric("Decisions", len(meeting.get("decisions", [])))
+    c4.metric("Actions", len(meeting.get("actions", [])))
+    c5.metric("Risks", len(meeting.get("risks", [])))
+
+    if meeting.get("participants"):
+        st.markdown("### Speaker balance")
+        st.dataframe(meeting.get("participants", []), use_container_width=True, hide_index=True)
 
     a, b = st.columns(2)
     with a:
@@ -65,13 +125,13 @@ if meeting:
         if not meeting.get("risks"):
             st.caption("No strong risk signals detected.")
         for r in meeting.get("risks", []):
-            st.markdown(f"<div class='card'><strong>{r.get('title','')}</strong><br><span class='small'>{r.get('severity','Medium')} · minute {r.get('minute',0)}</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='card'><strong>{r.get('title','')}</strong><br><span class='small'>{r.get('speaker','Speaker')} · {r.get('severity','Medium')} · {r.get('timestamp', '00:00')}</span></div>", unsafe_allow_html=True)
     with b:
         st.markdown("### Action items")
         if not meeting.get("actions"):
             st.caption("No strong action signals detected.")
         for x in meeting.get("actions", []):
-            st.markdown(f"<div class='card'><strong>{x.get('task','')}</strong><br><span class='small'>Owner: {x.get('owner','Unassigned')} · Due: {x.get('due','Not stated')}</span></div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='card'><strong>{x.get('task','')}</strong><br><span class='small'>Owner: {x.get('owner','Unassigned')} · Due: {x.get('due','Not stated')} · {x.get('timestamp', '00:00')}</span></div>", unsafe_allow_html=True)
 
     st.markdown("### Timestamped transcript")
     st.dataframe(meeting.get("segments", []), use_container_width=True, hide_index=True)
@@ -90,4 +150,4 @@ if meeting:
     with b2:
         st.download_button("Download meeting JSON", data=json.dumps(meeting, indent=2, ensure_ascii=False), file_name=f"{meeting.get('title','meeting').replace(' ','_').lower()}.json", mime="application/json", use_container_width=True)
 
-st.caption("MeetingLens AI · audio → evidence → decision → memory")
+st.caption("MeetingLens AI · audio → speaker → evidence → decision → memory")
