@@ -51,6 +51,8 @@ def test_decision_drift_finds_changed_decision():
     assert drift
     assert drift[0]["from_meeting"] == "Launch Weekly 1"
     assert drift[0]["to_meeting"] == "Launch Weekly 2"
+    assert drift[0]["change_type"] == "delay"
+    assert drift[0]["confidence"] >= 0.5
 
 
 def test_recurring_blockers_cluster_related_risks():
