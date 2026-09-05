@@ -65,11 +65,16 @@ with st.sidebar:
     st.markdown('<div class="sidebox"><div class="micro">Focus</div><strong>Decisions, ownership, unresolved work</strong></div>',unsafe_allow_html=True)
     st.markdown('<div class="sidebox"><div class="micro">Current build</div><strong>Unified Streamlit application</strong></div>',unsafe_allow_html=True)
 
-meeting=DEMO
+meeting=st.session_state.get("dashboard_meeting") or st.session_state.get("current_meeting") or DEMO
 if uploaded:
     candidate,err=load_upload(uploaded)
-    if candidate:meeting=candidate;st.sidebar.success("Meeting loaded")
+    if candidate:
+        meeting=candidate
+        st.session_state.dashboard_meeting=candidate
+        st.sidebar.success("Meeting loaded")
     else:st.sidebar.error(f"Invalid JSON: {err}")
+if meeting is not DEMO:
+    st.sidebar.caption("Dashboard source · analyzed / Memory Vault meeting")
 h=health(meeting)
 st.markdown('<div class="top"><div class="crumb">MeetingLens / intelligence workspace</div><div class="ready"><i></i> analysis ready</div></div>',unsafe_allow_html=True)
 tabs=st.tabs(["Overview","Decisions & ownership","Search memory","Signals"])

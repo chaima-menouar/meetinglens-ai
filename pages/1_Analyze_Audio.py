@@ -5,6 +5,7 @@ import os
 import streamlit as st
 
 from meetinglens_pipeline import transcribe_audio
+from meetinglens_memory_store import get_memory_store
 
 st.set_page_config(page_title="Analyze Audio · MeetingLens AI", page_icon="◉", layout="wide")
 
@@ -17,8 +18,9 @@ html,body,[class*=css]{font-family:Inter,system-ui,sans-serif}.stApp{background:
 
 st.markdown("""<div class='hero'><div class='eyebrow'>Audio intelligence pipeline</div><h1>Upload. Transcribe. Understand.</h1><p>Turn an English meeting recording into timestamped evidence, speaker-aware conversation turns, decisions, follow-up actions, risks, and a searchable meeting object.</p></div>""", unsafe_allow_html=True)
 
+store = get_memory_store()
 if "meeting_vault" not in st.session_state:
-    st.session_state.meeting_vault = []
+    st.session_state.meeting_vault = store.load()
 
 
 def get_hf_token() -> str:
@@ -152,18 +154,17 @@ if meeting:
     transcript_rows = [{key: row.get(key) for key in transcript_columns} for row in meeting.get("segments", [])]
     st.dataframe(transcript_rows, use_container_width=True, hide_index=True)
 
-    b1, b2 = st.columns(2)
+    b1, b2, b3 = st.columns(3)
     with b1:
-        if st.button("Add this meeting to Memory Vault", use_container_width=True):
-            vault = st.session_state.meeting_vault
-            fingerprint = (meeting.get("title"), meeting.get("duration_min"), len(meeting.get("segments", [])))
-            exists = any((m.get("title"), m.get("duration_min"), len(m.get("segments", []))) == fingerprint for m in vault)
-            if not exists:
-                vault.append(meeting)
-                st.success("Added to Memory Vault.")
-            else:
-                st.info("This meeting is already in the vault.")
+        if st.button("Save to Memory Vault", use_container_width=True):
+            vault, created = store.upsert(meeting)
+            st.session_state.meeting_vault = vault
+            st.success("Saved to Memory Vault." if created else "Memory Vault updated.")
     with b2:
+        if st.button("Open full dashboard", use_container_width=True):
+            st.session_state.dashboard_meeting = meeting
+            st.switch_page("app.py")
+    with b3:
         st.download_button("Download meeting JSON", data=json.dumps(meeting, indent=2, ensure_ascii=False), file_name=f"{meeting.get('title','meeting').replace(' ','_').lower()}.json", mime="application/json", use_container_width=True)
 
 st.caption("MeetingLens AI · audio → speaker → evidence → decision → memory")
