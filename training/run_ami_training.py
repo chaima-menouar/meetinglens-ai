@@ -7,6 +7,7 @@ from pathlib import Path
 from training.ami_dataset import build_examples, write_csv
 from training.download_ami import download_annotations
 from training.train_baseline import train
+from training.train_event_detectors import train_event_detectors
 
 
 def run(skip_download: bool = False, corpus_root: str | None = None) -> dict:
@@ -21,7 +22,8 @@ def run(skip_download: bool = False, corpus_root: str | None = None) -> dict:
         raise FileNotFoundError(f"AMI corpus directory not found: {root}")
 
     dataset_path = Path("data/processed/ami_events.csv")
-    artifact_dir = Path("artifacts/meeting_event_baseline")
+    baseline_dir = Path("artifacts/meeting_event_baseline")
+    detectors_dir = Path("artifacts/meeting_event_detectors_v2")
 
     examples = build_examples(root)
     if not examples:
@@ -30,23 +32,28 @@ def run(skip_download: bool = False, corpus_root: str | None = None) -> dict:
         )
     write_csv(examples, dataset_path)
 
-    metrics = train(dataset_path, artifact_dir)
+    baseline = train(dataset_path, baseline_dir)
+    detectors = train_event_detectors(dataset_path, detectors_dir)
     summary = {
         "dataset": str(dataset_path),
-        "artifact_dir": str(artifact_dir),
+        "baseline_artifact_dir": str(baseline_dir),
+        "detectors_artifact_dir": str(detectors_dir),
         "examples": len(examples),
-        "labels": metrics["labels"],
-        "macro_f1": metrics["classification_report"]["macro avg"]["f1-score"],
-        "weighted_f1": metrics["classification_report"]["weighted avg"]["f1-score"],
-        "train_meetings": len(metrics["train_meetings"]),
-        "test_meetings": len(metrics["test_meetings"]),
+        "labels": baseline["labels"],
+        "baseline_macro_f1": baseline["classification_report"]["macro avg"]["f1-score"],
+        "baseline_weighted_f1": baseline["classification_report"]["weighted avg"]["f1-score"],
+        "v2_macro_event_f1": detectors["macro_event_f1"],
+        "v2_macro_event_average_precision": detectors["macro_event_average_precision"],
+        "v2_events": detectors["events"],
+        "train_meetings": len(baseline["train_meetings"]),
+        "test_meetings": len(baseline["test_meetings"]),
     }
     print(json.dumps(summary, indent=2))
     return summary
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run the MeetingLens AMI baseline training pipeline")
+    parser = argparse.ArgumentParser(description="Run the MeetingLens AMI training pipeline")
     parser.add_argument("--skip-download", action="store_true")
     parser.add_argument("--corpus-root", default=None)
     args = parser.parse_args()
