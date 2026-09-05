@@ -20,12 +20,14 @@ st.write("")
 check_memory = st.toggle("Test Memory Vault connection now", value=False, help="When Supabase is configured this sends one small server-side read request. No secret is displayed.")
 status = collect_runtime_status(check_memory=check_memory)
 score = readiness_score(status)
+mem = status["memory"]
 
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("Core readiness", f"{score}%")
 c2.metric("Memory mode", status.get("mode", "unknown"))
-c3.metric("Transcription", "Ready" if status["transcription"]["ok"] else "Unavailable")
-c4.metric("AI rankers", "Ready" if status["candidate_rankers"]["ok"] else "Missing")
+c3.metric("Workspace", mem.get("workspace_id", "default"))
+c4.metric("Transcription", "Ready" if status["transcription"]["ok"] else "Unavailable")
+c5.metric("AI rankers", "Ready" if status["candidate_rankers"]["ok"] else "Missing")
 
 st.divider()
 left, right = st.columns(2)
@@ -41,8 +43,7 @@ with right:
     st.subheader("Optional / hosted services")
     di = status["diarization"]
     st.markdown(f"<div class='card'><strong>Automatic diarization · {'Ready' if di['ok'] and di['hf_token_configured'] else 'Optional setup incomplete'}</strong><div class='small'>pyannote runtime: {di['runtime_installed']} · HF token configured: {di['hf_token_configured']}</div></div>", unsafe_allow_html=True)
-    mem = status["memory"]
-    st.markdown(f"<div class='card'><strong>Memory Vault · {mem.get('backend','unknown')}</strong><div class='small'>{mem.get('detail','')}</div></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='card'><strong>Memory Vault · {mem.get('backend','unknown')}</strong><div class='small'>Workspace: {mem.get('workspace_id','default')} · {mem.get('detail','')}</div></div>", unsafe_allow_html=True)
     if status.get("supabase_configured"):
         st.success("Hosted Memory Vault is configured. Use the connection test above to validate the table from this deployment.")
     else:
