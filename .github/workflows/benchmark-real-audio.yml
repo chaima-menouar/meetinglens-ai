@@ -1,0 +1,110 @@
+name: benchmark-real-audio
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Whisper model
+        required: true
+        default: tiny.en
+        type: choice
+        options:
+          - tiny.en
+          - base.en
+      diarize:
+        description: Run optional pyannote diarization (requires HF_TOKEN secret)
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install app dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install optional diarization runtime
+        if: ${{ inputs.diarize }}
+        run: pip install -r requirements-diarization.txt
+
+      - name: Validate diarization secret
+        if: ${{ inputs.diarize }}
+        shell: bash
+        run: |
+          if [ -z "$HF_TOKEN" ]; then
+            echo "HF_TOKEN repository secret is required when diarize=true."
+            exit 1
+          fi
+
+      - name: Download official AMI multi-speaker meeting
+        run: |
+          curl --fail --location --retry 3 \
+            -o ami_full.wav \
+            https://groups.inf.ed.ac.uk/ami/AMICorpusMirror/amicorpus/ES2002a/audio/ES2002a.Mix-Headset.wav
+
+      - name: Trim first 3 minutes
+        run: |
+          python - <<'PY'
+          import wave
+          from pathlib import Path
+
+          source = Path('ami_full.wav')
+          target = Path('ami_sample.wav')
+          with wave.open(str(source), 'rb') as src:
+              params = src.getparams()
+              frames = src.readframes(min(src.getnframes(), int(src.getframerate() * 180)))
+          with wave.open(str(target), 'wb') as dst:
+              dst.setparams(params)
+              dst.writeframes(frames)
+          print(f'Wrote {target} ({target.stat().st_size / 1024 / 1024:.1f} MB)')
+          PY
+
+      - name: Run MeetingLens benchmark without diarization
+        if: ${{ !inputs.diarize }}
+        run: |
+          python benchmarks/benchmark_audio_pipeline.py ami_sample.wav \
+            --model "${{ inputs.model }}" \
+            --output benchmark_result.json
+
+      - name: Run MeetingLens benchmark with diarization
+        if: ${{ inputs.diarize }}
+        run: |
+          python benchmarks/benchmark_audio_pipeline.py ami_sample.wav \
+            --model "${{ inputs.model }}" \
+            --diarize \
+            --hf-token "$HF_TOKEN" \
+            --min-speakers 2 \
+            --max-speakers 6 \
+            --output benchmark_result.json
+
+      - name: Publish benchmark summary
+        shell: bash
+        run: |
+          echo '## MeetingLens real-audio benchmark' >> "$GITHUB_STEP_SUMMARY"
+          echo '' >> "$GITHUB_STEP_SUMMARY"
+          echo '```json' >> "$GITHUB_STEP_SUMMARY"
+          cat benchmark_result.json >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload benchmark report
+        uses: actions/upload-artifact@v4
+        with:
+          name: meetinglens-real-audio-${{ inputs.model }}-${{ inputs.diarize }}
+          path: benchmark_result.json
+          retention-days: 14
