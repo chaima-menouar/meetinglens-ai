@@ -11,6 +11,14 @@ _STOP = {
 }
 _NEGATION = {"not", "no", "never", "cancel", "cancelled", "canceled", "stop", "drop", "revert", "delay", "postpone"}
 _CHANGE = {"instead", "change", "changed", "switch", "move", "replace", "revert", "delay", "postpone", "cancel", "cancelled", "canceled"}
+_STATE_TERMS = {
+    "cancelled": {"cancel", "cancelled", "canceled", "drop", "stop"},
+    "delayed": {"delay", "delayed", "postpone", "postponed", "later"},
+    "reverted": {"revert", "reverted", "rollback", "rolled"},
+    "switched": {"switch", "switched", "replace", "replaced", "instead"},
+    "approved": {"approve", "approved", "confirm", "confirmed", "keep", "keeping", "proceed"},
+}
+_WEEKDAYS = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
 
 
 def tokens(text: str) -> set[str]:
@@ -59,12 +67,7 @@ def _lexical_meeting_search(meetings: list[dict[str, Any]], query: str, limit: i
 
 
 def meeting_search(meetings: list[dict[str, Any]], query: str, limit: int = 12) -> list[dict[str, Any]]:
-    """Hybrid word/character TF-IDF retrieval with a safe lexical fallback.
-
-    Word n-grams reward topic overlap while character n-grams recover small wording,
-    spelling, and morphology differences. Structured meeting events receive a small
-    evidence bonus so a matching Decision/Action/Risk outranks casual conversation.
-    """
+    """Hybrid word/character TF-IDF retrieval with a safe lexical fallback."""
     value = (query or "").strip()
     if not value:
         return []
@@ -93,7 +96,6 @@ def meeting_search(meetings: list[dict[str, Any]], query: str, limit: int = 12) 
         return []
 
     try:
-        import numpy as np
         from sklearn.feature_extraction.text import TfidfVectorizer
 
         corpus = documents + [value]
@@ -153,7 +155,37 @@ def recurring_blockers(meetings: list[dict[str, Any]], min_occurrences: int = 2)
     return sorted(output, key=lambda x: x["count"], reverse=True)
 
 
+def _decision_state(text: str) -> str:
+    t = tokens(text)
+    for state in ("cancelled", "delayed", "reverted", "switched", "approved"):
+        if t & _STATE_TERMS[state]:
+            return state
+    return "neutral"
+
+
+def _schedule_markers(text: str) -> set[str]:
+    low = (text or "").lower()
+    markers = set(re.findall(r"\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", low))
+    markers.update(re.findall(r"\b\d{1,2}(?:st|nd|rd|th)?\b", low))
+    return markers
+
+
+def _topic_similarity(a: str, b: str) -> float:
+    remove = _CHANGE | _NEGATION | set().union(*_STATE_TERMS.values()) | _WEEKDAYS
+    ta = tokens(a) - remove
+    tb = tokens(b) - remove
+    if not ta or not tb:
+        return similarity(a, b)
+    return len(ta & tb) / len(ta | tb)
+
+
 def decision_drift(meetings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Detect interpretable changes between related decisions across meetings.
+
+    This is evidence-based drift logic, not a neural contradiction model. It separates
+    topic similarity from change-state and schedule markers so the UI can explain why
+    a pair was flagged.
+    """
     decisions: list[dict[str, Any]] = []
     for mi, meeting in enumerate(meetings):
         for di, decision in enumerate(meeting.get("decisions", [])):
@@ -165,29 +197,61 @@ def decision_drift(meetings: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "decision_index": di,
                     "text": text,
                     "minute": decision.get("minute", 0),
+                    "state": _decision_state(text),
+                    "schedule": _schedule_markers(text),
                 })
 
-    drift = []
+    drift: list[dict[str, Any]] = []
     for i, old in enumerate(decisions):
         for new in decisions[i + 1:]:
             if new["meeting_index"] <= old["meeting_index"]:
                 continue
-            sim = similarity(old["text"], new["text"])
-            if sim < 0.22:
+            topic_sim = _topic_similarity(old["text"], new["text"])
+            raw_sim = similarity(old["text"], new["text"])
+            if max(topic_sim, raw_sim) < 0.20:
                 continue
-            old_t, new_t = tokens(old["text"]), tokens(new["text"])
-            has_change = bool(new_t & _CHANGE)
-            negation_shift = bool((old_t ^ new_t) & _NEGATION)
-            if has_change or negation_shift or sim >= 0.5:
-                drift.append({
-                    "from_meeting": old["meeting"],
-                    "to_meeting": new["meeting"],
-                    "previous": old["text"],
-                    "current": new["text"],
-                    "similarity": round(sim, 2),
-                    "reason": "possible reversal/change" if (has_change or negation_shift) else "same decision topic evolved",
-                })
-    return sorted(drift, key=lambda x: x["similarity"], reverse=True)[:12]
+
+            state_changed = old["state"] != new["state"] and new["state"] != "neutral"
+            schedule_changed = bool(old["schedule"] and new["schedule"] and old["schedule"] != new["schedule"])
+            explicit_change = bool(tokens(new["text"]) & _CHANGE)
+            negation_shift = bool((tokens(old["text"]) ^ tokens(new["text"])) & _NEGATION)
+
+            change_type = None
+            if new["state"] == "cancelled":
+                change_type = "cancellation"
+            elif new["state"] == "delayed":
+                change_type = "delay"
+            elif new["state"] == "reverted":
+                change_type = "reversal"
+            elif new["state"] == "switched":
+                change_type = "choice change"
+            elif schedule_changed:
+                change_type = "schedule shift"
+            elif state_changed or negation_shift or explicit_change:
+                change_type = "decision change"
+            elif topic_sim >= 0.55:
+                change_type = "decision evolution"
+
+            if not change_type:
+                continue
+
+            evidence_count = sum([state_changed, schedule_changed, explicit_change, negation_shift])
+            confidence = min(0.98, 0.48 + max(topic_sim, raw_sim) * 0.35 + evidence_count * 0.09)
+            drift.append({
+                "from_meeting": old["meeting"],
+                "to_meeting": new["meeting"],
+                "previous": old["text"],
+                "current": new["text"],
+                "similarity": round(max(topic_sim, raw_sim), 2),
+                "topic_similarity": round(topic_sim, 2),
+                "change_type": change_type,
+                "previous_state": old["state"],
+                "current_state": new["state"],
+                "schedule_changed": schedule_changed,
+                "confidence": round(confidence, 2),
+                "reason": change_type,
+            })
+    return sorted(drift, key=lambda x: (x["confidence"], x["similarity"]), reverse=True)[:12]
 
 
 def memory_stats(meetings: list[dict[str, Any]]) -> dict[str, int]:
