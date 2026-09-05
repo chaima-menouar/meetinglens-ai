@@ -151,9 +151,38 @@ To enable Supabase, run `supabase_schema.sql` once in Supabase SQL Editor, then 
 SUPABASE_URL = "https://your-project.supabase.co"
 SUPABASE_SERVICE_KEY = "your_server_side_service_role_key"
 SUPABASE_TABLE = "meetinglens_meetings"
+MEETINGLENS_WORKSPACE_ID = "default"
 ```
 
 The service-role key is used server-side only. The repository intentionally creates no public/anon table policy.
+
+### Workspace isolation
+
+Hosted meetings are scoped by `workspace_id`. The Supabase primary key is `(workspace_id, meeting_id)`, reads only query the active workspace, and destructive operations such as **Clear Memory Vault** are also workspace-scoped.
+
+This gives the project an organization/workspace boundary before full multi-user authorization is enabled.
+
+## Optional OIDC authentication
+
+MeetingLens now supports Streamlit-native OIDC authentication while preserving the current public/single-user deployment by default.
+
+- if no `[auth]` section exists in Streamlit Secrets, all pages behave exactly as before;
+- if OIDC is configured, `app.py` and every page require a logged-in user;
+- the sidebar exposes sign-out only in authenticated mode;
+- a CI guard checks that new Streamlit pages cannot silently omit the auth gate.
+
+Example configuration:
+
+```toml
+[auth]
+redirect_uri = "https://your-app.streamlit.app/oauth2callback"
+cookie_secret = "generate-a-long-random-secret"
+client_id = "your-oidc-client-id"
+client_secret = "your-oidc-client-secret"
+server_metadata_url = "https://accounts.google.com/.well-known/openid-configuration"
+```
+
+`Authlib` is included because Streamlit authentication requires it. The complete commented example is in `.streamlit/secrets.example.toml`.
 
 ## Production Status
 
@@ -165,6 +194,7 @@ It reports:
 - whether `faster-whisper` is installed
 - whether the promoted Decision/Action ranker artifacts are present
 - current Memory Vault backend (`runtime-json` or `supabase`)
+- active workspace ID
 - optional Supabase connection health check
 - whether `pyannote.audio` is installed
 - whether a Hugging Face token is configured
@@ -187,6 +217,8 @@ python benchmarks/benchmark_audio_pipeline.py meeting.wav --model tiny.en --diar
 ```
 
 The report records elapsed time, audio size, meeting duration, transcript segment count, detected speakers, decisions/actions/risks, AI candidate counts, diarization status, coverage, quality, and fallback assignments.
+
+A manual GitHub Actions workflow, `.github/workflows/benchmark-real-audio.yml`, can also download an official AMI multi-speaker sample and publish the benchmark report as an artifact. Diarization mode requires the repository `HF_TOKEN` secret.
 
 ## AMI training and evaluation
 
@@ -228,15 +260,16 @@ The app loads them through `meetinglens_candidate_ranker.py`. If promoted artifa
 
 ```text
 app.py                              main executive workspace
+meetinglens_auth.py                 optional Streamlit OIDC gate
 meetinglens_pipeline.py             transcription + intelligence pipeline
 meetinglens_candidate_ranker.py     promoted Decision/Action ranker runtime
 meetinglens_diarization.py          speaker diarization + timestamp alignment
 meetinglens_diagnostics.py          safe deployment/runtime readiness checks
 meetinglens_event_model.py          research/production detector loader
 meetinglens_intelligence.py         retrieval, drift, blockers, execution analytics
-meetinglens_memory_store.py         JSON + optional Supabase Memory Vault backend
+meetinglens_memory_store.py         JSON + Supabase + workspace-scoped memory
 meetinglens_review.py               confirm/reject AI candidate operations
-supabase_schema.sql                 durable Memory Vault schema
+supabase_schema.sql                 durable workspace-aware Memory Vault schema
 
 pages/1_Analyze_Audio.py            audio analysis workflow
 pages/2_Memory_Intelligence.py      cross-meeting memory + execution tracking
@@ -245,6 +278,7 @@ pages/4_AI_Review.py                human-in-the-loop candidate confirmation
 pages/5_Production_Status.py        runtime/deployment diagnostics
 
 benchmarks/benchmark_audio_pipeline.py real-audio benchmark command
+.github/workflows/benchmark-real-audio.yml manual AMI benchmark workflow
 
 training/ami_dataset.py             AMI NXT/XML -> gold/weak training rows
 training/train_baseline.py          multiclass research baseline
@@ -284,6 +318,7 @@ The standard deployment intentionally does not force the heavy pyannote runtime.
 
 - Python
 - Streamlit
+- Authlib / OIDC (optional authentication)
 - faster-whisper
 - pyannote.audio (optional)
 - scikit-learn
@@ -300,14 +335,15 @@ The standard deployment intentionally does not force the heavy pyannote runtime.
 - automatic diarization requires the optional pyannote runtime and Hugging Face access;
 - runtime JSON storage is not guaranteed across Streamlit instance recreation unless Supabase is configured;
 - Decision Drift is interpretable but still heuristic rather than a dedicated contradiction model;
-- a real multi-speaker end-to-end audio benchmark still needs a real recording plus the optional diarization runtime/token.
+- a real multi-speaker end-to-end diarization benchmark still requires `HF_TOKEN` and an environment capable of running pyannote;
+- OIDC authentication is implemented but remains disabled until real identity-provider credentials are configured.
 
 ## Next production milestones
 
-1. run the real multi-speaker benchmark in the target deployed environment;
-2. connect and validate the real Supabase project;
-3. add authentication when multi-user hosted storage is enabled;
-4. add organization/workspace boundaries once multi-user data exists.
+1. run the manual real-audio benchmark in the target environment;
+2. connect and validate the real Supabase project from Production Status;
+3. configure the real OIDC identity provider if login is desired;
+4. map authenticated identities to organization/workspace membership when true multi-user authorization is required.
 
 ---
 
