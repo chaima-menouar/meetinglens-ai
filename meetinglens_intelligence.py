@@ -27,7 +27,7 @@ def similarity(a: str, b: str) -> float:
     return len(ta & tb) / len(ta | tb)
 
 
-def meeting_search(meetings: list[dict[str, Any]], query: str, limit: int = 12) -> list[dict[str, Any]]:
+def _lexical_meeting_search(meetings: list[dict[str, Any]], query: str, limit: int = 12) -> list[dict[str, Any]]:
     q = tokens(query)
     if not q:
         return []
@@ -53,8 +53,69 @@ def meeting_search(meetings: list[dict[str, Any]], query: str, limit: int = 12) 
                 "speaker": seg.get("speaker", "Speaker"),
                 "kind": seg.get("kind", "conversation"),
                 "text": seg.get("text", ""),
+                "retrieval": "lexical",
             })
     return sorted(results, key=lambda x: x["score"], reverse=True)[:limit]
+
+
+def meeting_search(meetings: list[dict[str, Any]], query: str, limit: int = 12) -> list[dict[str, Any]]:
+    """Hybrid word/character TF-IDF retrieval with a safe lexical fallback.
+
+    Word n-grams reward topic overlap while character n-grams recover small wording,
+    spelling, and morphology differences. Structured meeting events receive a small
+    evidence bonus so a matching Decision/Action/Risk outranks casual conversation.
+    """
+    value = (query or "").strip()
+    if not value:
+        return []
+
+    records: list[dict[str, Any]] = []
+    documents: list[str] = []
+    for mi, meeting in enumerate(meetings):
+        title = meeting.get("title", f"Meeting {mi + 1}")
+        for seg in meeting.get("segments", []):
+            text = str(seg.get("text", "")).strip()
+            if not text:
+                continue
+            kind = str(seg.get("kind", "conversation"))
+            speaker = str(seg.get("speaker", "Speaker"))
+            documents.append(f"{title} {speaker} {kind} {text}")
+            records.append({
+                "meeting": title,
+                "meeting_index": mi,
+                "timestamp": seg.get("timestamp") or f"{int(seg.get('minute', 0)):02d}:00",
+                "speaker": speaker,
+                "kind": kind,
+                "text": text,
+            })
+
+    if not records:
+        return []
+
+    try:
+        import numpy as np
+        from sklearn.feature_extraction.text import TfidfVectorizer
+
+        corpus = documents + [value]
+        word = TfidfVectorizer(ngram_range=(1, 2), sublinear_tf=True, stop_words="english")
+        char = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5), sublinear_tf=True, min_df=1)
+        word_matrix = word.fit_transform(corpus)
+        char_matrix = char.fit_transform(corpus)
+        word_scores = (word_matrix[:-1] @ word_matrix[-1].T).toarray().ravel()
+        char_scores = (char_matrix[:-1] @ char_matrix[-1].T).toarray().ravel()
+        scores = 0.72 * word_scores + 0.28 * char_scores
+
+        output = []
+        for index, record in enumerate(records):
+            score = float(scores[index])
+            if record["kind"] in {"decision", "action", "risk"}:
+                score += 0.05
+            if score < 0.025:
+                continue
+            output.append({**record, "score": round(min(1.0, score), 3), "retrieval": "hybrid-tfidf"})
+        return sorted(output, key=lambda x: x["score"], reverse=True)[:limit]
+    except Exception:
+        return _lexical_meeting_search(meetings, value, limit=limit)
 
 
 def recurring_blockers(meetings: list[dict[str, Any]], min_occurrences: int = 2) -> list[dict[str, Any]]:
