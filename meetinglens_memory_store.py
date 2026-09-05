@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 
 DEFAULT_STORE_PATH = "data/runtime/meeting_vault.json"
 DEFAULT_SUPABASE_TABLE = "meetinglens_meetings"
+DEFAULT_WORKSPACE_ID = "default"
 
 
 def meeting_fingerprint(meeting: dict[str, Any]) -> str:
@@ -49,8 +50,9 @@ class MeetingMemoryStore:
 
     backend = "runtime-json"
 
-    def __init__(self, path: str | Path | None = None):
+    def __init__(self, path: str | Path | None = None, workspace_id: str = DEFAULT_WORKSPACE_ID):
         self.path = Path(path or os.getenv("MEETINGLENS_MEMORY_PATH", DEFAULT_STORE_PATH))
+        self.workspace_id = workspace_id.strip() or DEFAULT_WORKSPACE_ID
 
     def load(self) -> list[dict[str, Any]]:
         if not self.path.exists():
@@ -64,7 +66,7 @@ class MeetingMemoryStore:
 
     def save(self, meetings: list[dict[str, Any]]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"version": 1, "meetings": _dedupe(meetings)}
+        payload = {"version": 1, "workspace_id": self.workspace_id, "meetings": _dedupe(meetings)}
         temp = self.path.with_suffix(self.path.suffix + ".tmp")
         temp.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         temp.replace(self.path)
@@ -97,26 +99,24 @@ class MeetingMemoryStore:
             return {
                 "ok": True,
                 "backend": self.backend,
+                "workspace_id": self.workspace_id,
                 "meeting_count": len(meetings),
                 "detail": "Runtime JSON store is readable.",
             }
         except Exception as exc:
-            return {"ok": False, "backend": self.backend, "meeting_count": 0, "detail": str(exc)}
+            return {"ok": False, "backend": self.backend, "workspace_id": self.workspace_id, "meeting_count": 0, "detail": str(exc)}
 
 
 class SupabaseMeetingMemoryStore:
-    """Hosted Memory Vault through the Supabase REST API.
-
-    Requires a private server-side key and the schema in `supabase_schema.sql`.
-    The app never sends the key to the browser; all requests execute server-side.
-    """
+    """Hosted Memory Vault through the Supabase REST API with workspace isolation."""
 
     backend = "supabase"
 
-    def __init__(self, url: str, key: str, table: str = DEFAULT_SUPABASE_TABLE):
+    def __init__(self, url: str, key: str, table: str = DEFAULT_SUPABASE_TABLE, workspace_id: str = DEFAULT_WORKSPACE_ID):
         self.url = url.rstrip("/")
         self.key = key.strip()
         self.table = table.strip() or DEFAULT_SUPABASE_TABLE
+        self.workspace_id = workspace_id.strip() or DEFAULT_WORKSPACE_ID
         if not self.url or not self.key:
             raise ValueError("Supabase URL and key are required")
 
@@ -151,41 +151,61 @@ class SupabaseMeetingMemoryStore:
                     detail = ""
             raise RuntimeError(f"Supabase Memory Vault request failed: {exc}. {detail}".strip()) from exc
 
+    def _workspace_query(self) -> dict[str, str]:
+        return {"workspace_id": f"eq.{self.workspace_id}"}
+
     def load(self) -> list[dict[str, Any]]:
-        rows = self._request("GET", {"select": "payload", "order": "saved_at.asc"}) or []
+        query = {"select": "payload", "order": "saved_at.asc", **self._workspace_query()}
+        rows = self._request("GET", query) or []
         return [row.get("payload") for row in rows if isinstance(row, dict) and isinstance(row.get("payload"), dict)]
 
     def upsert(self, meeting: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]:
         item = prepare_meeting(meeting)
         existing = {m.get("meeting_id") for m in self.load()}
-        row = {"meeting_id": item["meeting_id"], "saved_at": item["saved_at"], "payload": item}
-        self._request("POST", {"on_conflict": "meeting_id"}, [row], "resolution=merge-duplicates,return=minimal")
+        row = {
+            "workspace_id": self.workspace_id,
+            "meeting_id": item["meeting_id"],
+            "saved_at": item["saved_at"],
+            "payload": item,
+        }
+        self._request("POST", {"on_conflict": "workspace_id,meeting_id"}, [row], "resolution=merge-duplicates,return=minimal")
         return self.load(), item["meeting_id"] not in existing
 
     def replace_all(self, meetings: list[dict[str, Any]]) -> list[dict[str, Any]]:
         items = _dedupe(meetings)
         if items:
-            rows = [{"meeting_id": m["meeting_id"], "saved_at": m["saved_at"], "payload": m} for m in items]
-            self._request("POST", {"on_conflict": "meeting_id"}, rows, "resolution=merge-duplicates,return=minimal")
+            rows = [
+                {
+                    "workspace_id": self.workspace_id,
+                    "meeting_id": m["meeting_id"],
+                    "saved_at": m["saved_at"],
+                    "payload": m,
+                }
+                for m in items
+            ]
+            self._request("POST", {"on_conflict": "workspace_id,meeting_id"}, rows, "resolution=merge-duplicates,return=minimal")
         return self.load()
 
     def clear(self) -> None:
-        self._request("DELETE", {"meeting_id": "not.is.null"}, prefer="return=minimal")
+        self._request("DELETE", self._workspace_query(), prefer="return=minimal")
 
     def healthcheck(self) -> dict[str, Any]:
         try:
-            rows = self._request("GET", {"select": "meeting_id", "limit": "1"}) or []
+            query = {"select": "meeting_id", "limit": "1", **self._workspace_query()}
+            rows = self._request("GET", query) or []
             return {
                 "ok": True,
                 "backend": self.backend,
+                "workspace_id": self.workspace_id,
                 "meeting_count": None,
-                "detail": f"Supabase table '{self.table}' is reachable.",
+                "detail": f"Supabase table '{self.table}' is reachable for this workspace.",
                 "sample_rows": len(rows),
             }
         except Exception as exc:
             return {
                 "ok": False,
                 "backend": self.backend,
+                "workspace_id": self.workspace_id,
                 "meeting_count": None,
                 "detail": str(exc),
                 "sample_rows": 0,
@@ -193,7 +213,7 @@ class SupabaseMeetingMemoryStore:
 
 
 _STORE: MeetingMemoryStore | SupabaseMeetingMemoryStore | None = None
-_STORE_KEY: tuple[str, str, str] | None = None
+_STORE_KEY: tuple[str, str, str, str] | None = None
 
 
 def _streamlit_secret(name: str) -> str:
@@ -208,6 +228,7 @@ def get_memory_store(
     supabase_url: str | None = None,
     supabase_key: str | None = None,
     supabase_table: str | None = None,
+    workspace_id: str | None = None,
 ) -> MeetingMemoryStore | SupabaseMeetingMemoryStore:
     global _STORE, _STORE_KEY
     url = (supabase_url or os.getenv("SUPABASE_URL", "") or _streamlit_secret("SUPABASE_URL")).strip()
@@ -224,9 +245,19 @@ def get_memory_store(
         or _streamlit_secret("SUPABASE_TABLE")
         or DEFAULT_SUPABASE_TABLE
     ).strip()
-    store_key = (url, key, table)
+    workspace = (
+        workspace_id
+        or os.getenv("MEETINGLENS_WORKSPACE_ID", "")
+        or _streamlit_secret("MEETINGLENS_WORKSPACE_ID")
+        or DEFAULT_WORKSPACE_ID
+    ).strip()
+    store_key = (url, key, table, workspace)
     if _STORE is not None and _STORE_KEY == store_key:
         return _STORE
     _STORE_KEY = store_key
-    _STORE = SupabaseMeetingMemoryStore(url, key, table) if url and key else MeetingMemoryStore()
+    _STORE = (
+        SupabaseMeetingMemoryStore(url, key, table, workspace)
+        if url and key
+        else MeetingMemoryStore(workspace_id=workspace)
+    )
     return _STORE
