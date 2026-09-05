@@ -61,7 +61,7 @@ with left:
 with right:
     st.markdown("""<div class='card'><span class='tag'>Current pipeline</span><p><strong>1 · Transcription</strong><br><span class='small'>faster-whisper on CPU with timestamps and VAD.</span></p><p><strong>2 · Speaker diarization</strong><br><span class='small'>Optional pyannote Community-1 speaker turns aligned to Whisper segments.</span></p><p><strong>3 · Conversation intelligence</strong><br><span class='small'>Sentiment plus decision, action, risk, owner, and due-date extraction.</span></p><p><strong>4 · Memory-ready output</strong><br><span class='small'>The meeting can be added to Memory Vault for cross-meeting analysis.</span></p></div>""", unsafe_allow_html=True)
     if auto_diarize:
-        st.info("Automatic diarization is requested. If the optional pyannote runtime is unavailable, MeetingLens will keep the transcript and fall back safely to Speaker Review.")
+        st.info("Automatic diarization is requested. MeetingLens now checks alignment coverage before trusting the speaker labels. Low-confidence output is routed to Speaker Review.")
     else:
         st.info("Speaker Review remains available after transcription. Enable automatic diarization when the pyannote runtime is configured.")
 
@@ -79,6 +79,7 @@ if analyze and audio is not None:
         )
         if auto_diarize:
             status.write("Aligning speaker turns with transcript timestamps…")
+            status.write("Checking diarization coverage and fallback assignments…")
         status.write("Extracting decisions, actions, risks, owners, and sentiment…")
         st.session_state.current_meeting = result
         status.update(label="Analysis complete", state="complete", expanded=False)
@@ -93,8 +94,11 @@ if meeting:
     st.caption(meeting.get("summary", ""))
 
     diarization_status = meeting.get("diarization_status", "speaker-review-needed")
+    diarization_meta = meeting.get("diarization", {})
     if diarization_status == "automatic-complete":
         st.success(f"Automatic diarization complete · {len(meeting.get('participants', []))} speakers detected")
+    elif diarization_status == "automatic-review-recommended":
+        st.warning("Automatic diarization ran, but alignment confidence is low. Review speaker labels before relying on speaker-level analytics.")
     elif diarization_status == "automatic-failed":
         st.warning("Transcription completed, but automatic diarization could not run. Speaker Review can still be used.")
         if meeting.get("diarization_error"):
@@ -109,6 +113,16 @@ if meeting:
     c3.metric("Decisions", len(meeting.get("decisions", [])))
     c4.metric("Actions", len(meeting.get("actions", [])))
     c5.metric("Risks", len(meeting.get("risks", [])))
+
+    if diarization_meta:
+        st.markdown("### Diarization quality")
+        q1, q2, q3, q4 = st.columns(4)
+        q1.metric("Coverage", f"{diarization_meta.get('coverage_pct', 0)}%")
+        q2.metric("Speaker turns", diarization_meta.get("turn_count", 0))
+        q3.metric("Fallback segments", diarization_meta.get("fallback_segments", 0))
+        q4.metric("Quality", str(diarization_meta.get("quality", "review")).title())
+        if diarization_meta.get("quality") == "review":
+            st.info("Speaker Review is recommended because too much transcript timing had weak direct overlap with the diarization turns.")
 
     if meeting.get("participants"):
         st.markdown("### Speaker balance")
@@ -134,7 +148,9 @@ if meeting:
             st.markdown(f"<div class='card'><strong>{x.get('task','')}</strong><br><span class='small'>Owner: {x.get('owner','Unassigned')} · Due: {x.get('due','Not stated')} · {x.get('timestamp', '00:00')}</span></div>", unsafe_allow_html=True)
 
     st.markdown("### Timestamped transcript")
-    st.dataframe(meeting.get("segments", []), use_container_width=True, hide_index=True)
+    transcript_columns = ["timestamp", "speaker", "speaker_overlap_ratio", "speaker_assignment", "kind", "text", "sentiment"]
+    transcript_rows = [{key: row.get(key) for key in transcript_columns} for row in meeting.get("segments", [])]
+    st.dataframe(transcript_rows, use_container_width=True, hide_index=True)
 
     b1, b2 = st.columns(2)
     with b1:
