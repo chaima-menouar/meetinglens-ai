@@ -3,11 +3,14 @@ from __future__ import annotations
 import json
 import os
 import streamlit as st
+from meetinglens_auth import require_user
 
 from meetinglens_pipeline import transcribe_audio
 from meetinglens_memory_store import get_memory_store
 
 st.set_page_config(page_title="Analyze Audio · MeetingLens AI", page_icon="◉", layout="wide")
+
+identity = require_user()
 
 st.markdown("""
 <style>

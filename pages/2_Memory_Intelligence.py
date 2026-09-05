@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import streamlit as st
+from meetinglens_auth import require_user
 
 from meetinglens_intelligence import (
     action_accountability,
@@ -14,6 +15,8 @@ from meetinglens_intelligence import (
 from meetinglens_memory_store import get_memory_store, meeting_fingerprint
 
 st.set_page_config(page_title="Memory Intelligence · MeetingLens AI", page_icon="◉", layout="wide")
+
+identity = require_user()
 
 st.markdown("""
 <style>

@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 import pandas as pd
 import streamlit as st
+from meetinglens_auth import require_user
 
 from meetinglens_pipeline import refresh_intelligence
 
 st.set_page_config(page_title="Speaker Review · MeetingLens AI", page_icon="◉", layout="wide")
+
+identity = require_user()
 
 st.markdown("""
 <style>

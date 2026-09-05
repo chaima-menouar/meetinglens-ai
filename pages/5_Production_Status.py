@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import streamlit as st
+from meetinglens_auth import require_user
 
 from meetinglens_diagnostics import collect_runtime_status, readiness_score
 
 st.set_page_config(page_title="Production Status · MeetingLens AI", page_icon="◉", layout="wide")
+
+identity = require_user()
 
 st.markdown("""
 <style>

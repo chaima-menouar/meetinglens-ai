@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import streamlit as st
+from meetinglens_auth import require_user
 
 from meetinglens_memory_store import get_memory_store
 from meetinglens_review import confirm_candidate, reject_candidate, review_stats
 
 st.set_page_config(page_title="AI Review · MeetingLens AI", page_icon="◇", layout="wide")
+
+identity = require_user()
 
 st.markdown("""
 <style>

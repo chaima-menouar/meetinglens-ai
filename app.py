@@ -3,9 +3,12 @@ import json, re
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from meetinglens_auth import require_user
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 st.set_page_config(page_title="MeetingLens AI", page_icon="◌", layout="wide", initial_sidebar_state="expanded")
+
+identity = require_user()
 HERO_IMAGE="https://images.unsplash.com/photo-1542744173-8e7e53415bb0?auto=format&fit=crop&w=1900&q=88"
 
 CSS = r"""
