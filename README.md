@@ -130,7 +130,7 @@ Memory Intelligence supports:
 - **hybrid word + character TF-IDF retrieval** across meetings
 - source meeting + timestamp evidence
 - recurring blocker clustering
-- Decision Drift detection
+- Decision Drift detection with interpretable change type
 - execution accountability across meetings
 - missing owner/deadline flags
 - action lifecycle editing: `Open / In progress / Blocked / Done`
@@ -154,6 +154,39 @@ SUPABASE_TABLE = "meetinglens_meetings"
 ```
 
 The service-role key is used server-side only. The repository intentionally creates no public/anon table policy.
+
+## Production Status
+
+Open **Production Status** to inspect the deployed runtime without exposing credentials.
+
+It reports:
+
+- Python/runtime compatibility
+- whether `faster-whisper` is installed
+- whether the promoted Decision/Action ranker artifacts are present
+- current Memory Vault backend (`runtime-json` or `supabase`)
+- optional Supabase connection health check
+- whether `pyannote.audio` is installed
+- whether a Hugging Face token is configured
+- a core readiness score
+
+The page never renders API keys or Hugging Face tokens.
+
+## Real-audio benchmark harness
+
+Use the benchmark command with a real meeting recording to compare runtime behavior between models and deployments:
+
+```bash
+python benchmarks/benchmark_audio_pipeline.py meeting.wav --model tiny.en --output tiny_result.json
+```
+
+With diarization configured:
+
+```bash
+python benchmarks/benchmark_audio_pipeline.py meeting.wav --model tiny.en --diarize --hf-token "$HF_TOKEN" --min-speakers 2 --max-speakers 6 --output diarized_result.json
+```
+
+The report records elapsed time, audio size, meeting duration, transcript segment count, detected speakers, decisions/actions/risks, AI candidate counts, diarization status, coverage, quality, and fallback assignments.
 
 ## AMI training and evaluation
 
@@ -198,6 +231,7 @@ app.py                              main executive workspace
 meetinglens_pipeline.py             transcription + intelligence pipeline
 meetinglens_candidate_ranker.py     promoted Decision/Action ranker runtime
 meetinglens_diarization.py          speaker diarization + timestamp alignment
+meetinglens_diagnostics.py          safe deployment/runtime readiness checks
 meetinglens_event_model.py          research/production detector loader
 meetinglens_intelligence.py         retrieval, drift, blockers, execution analytics
 meetinglens_memory_store.py         JSON + optional Supabase Memory Vault backend
@@ -208,6 +242,9 @@ pages/1_Analyze_Audio.py            audio analysis workflow
 pages/2_Memory_Intelligence.py      cross-meeting memory + execution tracking
 pages/3_Speaker_Review.py           speaker correction workflow
 pages/4_AI_Review.py                human-in-the-loop candidate confirmation
+pages/5_Production_Status.py        runtime/deployment diagnostics
+
+benchmarks/benchmark_audio_pipeline.py real-audio benchmark command
 
 training/ami_dataset.py             AMI NXT/XML -> gold/weak training rows
 training/train_baseline.py          multiclass research baseline
@@ -262,13 +299,13 @@ The standard deployment intentionally does not force the heavy pyannote runtime.
 - transcription is English-first in the current workflow;
 - automatic diarization requires the optional pyannote runtime and Hugging Face access;
 - runtime JSON storage is not guaranteed across Streamlit instance recreation unless Supabase is configured;
-- Decision Drift is still based on lexical/topic similarity plus change/negation signals rather than a dedicated contradiction model;
-- a real multi-speaker end-to-end audio benchmark is still needed for the deployed Whisper + diarization path.
+- Decision Drift is interpretable but still heuristic rather than a dedicated contradiction model;
+- a real multi-speaker end-to-end audio benchmark still needs a real recording plus the optional diarization runtime/token.
 
 ## Next production milestones
 
-1. run a real multi-speaker audio benchmark on the deployed environment;
-2. strengthen Decision Drift with contradiction-aware modeling;
+1. run the real multi-speaker benchmark in the target deployed environment;
+2. connect and validate the real Supabase project;
 3. add authentication when multi-user hosted storage is enabled;
 4. add organization/workspace boundaries once multi-user data exists.
 
