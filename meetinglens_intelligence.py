@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any
 
 _STOP = {
@@ -179,21 +180,49 @@ def _topic_similarity(a: str, b: str) -> float:
     return len(ta & tb) / len(ta | tb)
 
 
+def _iso_timestamp(value: Any) -> float | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _meeting_sort_key(meeting: dict[str, Any], fallback_index: int) -> tuple[int, float, int]:
+    for field in ("saved_at", "analyzed_at", "created_at"):
+        timestamp = _iso_timestamp(meeting.get(field))
+        if timestamp is not None:
+            return (0, timestamp, fallback_index)
+    return (1, float(fallback_index), fallback_index)
+
+
 def decision_drift(meetings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Detect interpretable changes between related decisions across meetings.
 
-    This is evidence-based drift logic, not a neural contradiction model. It separates
-    topic similarity from change-state and schedule markers so the UI can explain why
-    a pair was flagged.
+    Meetings are ordered by saved/analyzed/created timestamps when available, with
+    vault order used only as a fallback. This is evidence-based drift logic, not a
+    neural contradiction model.
     """
     decisions: list[dict[str, Any]] = []
-    for mi, meeting in enumerate(meetings):
+    ordered_meetings = sorted(
+        enumerate(meetings),
+        key=lambda pair: _meeting_sort_key(pair[1], pair[0]),
+    )
+    for chronology_index, (original_index, meeting) in enumerate(ordered_meetings):
+        meeting_time = meeting.get("saved_at") or meeting.get("analyzed_at") or meeting.get("created_at")
         for di, decision in enumerate(meeting.get("decisions", [])):
             text = " ".join([decision.get("title", ""), decision.get("detail", "")]).strip()
             if text:
                 decisions.append({
-                    "meeting_index": mi,
-                    "meeting": meeting.get("title", f"Meeting {mi + 1}"),
+                    "meeting_index": original_index,
+                    "chronology_index": chronology_index,
+                    "meeting": meeting.get("title", f"Meeting {original_index + 1}"),
+                    "meeting_time": meeting_time,
                     "decision_index": di,
                     "text": text,
                     "minute": decision.get("minute", 0),
@@ -204,7 +233,7 @@ def decision_drift(meetings: list[dict[str, Any]]) -> list[dict[str, Any]]:
     drift: list[dict[str, Any]] = []
     for i, old in enumerate(decisions):
         for new in decisions[i + 1:]:
-            if new["meeting_index"] <= old["meeting_index"]:
+            if new["chronology_index"] <= old["chronology_index"]:
                 continue
             topic_sim = _topic_similarity(old["text"], new["text"])
             raw_sim = similarity(old["text"], new["text"])
@@ -240,6 +269,8 @@ def decision_drift(meetings: list[dict[str, Any]]) -> list[dict[str, Any]]:
             drift.append({
                 "from_meeting": old["meeting"],
                 "to_meeting": new["meeting"],
+                "from_time": old["meeting_time"],
+                "to_time": new["meeting_time"],
                 "previous": old["text"],
                 "current": new["text"],
                 "similarity": round(max(topic_sim, raw_sim), 2),
