@@ -19,7 +19,7 @@ html,body,[class*=css]{font-family:Inter,system-ui,sans-serif}.stApp{background:
 </style>
 """, unsafe_allow_html=True)
 
-st.markdown("""<div class='hero'><div class='eyebrow'>Audio intelligence pipeline</div><h1>Upload. Transcribe. Understand.</h1><p>Turn an English meeting recording into timestamped evidence, speaker-aware conversation turns, decisions, follow-up actions, risks, and a searchable meeting object.</p></div>""", unsafe_allow_html=True)
+st.markdown("""<div class='hero'><div class='eyebrow'>Audio intelligence pipeline</div><h1>Upload. Transcribe. Understand.</h1><p>Turn a multilingual meeting recording into timestamped evidence and speaker-aware conversation turns. Whisper now auto-detects English, Arabic, Darija, and other supported languages.</p></div>""", unsafe_allow_html=True)
 
 store = get_memory_store()
 if "meeting_vault" not in st.session_state:
@@ -41,7 +41,14 @@ with left:
     audio = st.file_uploader("Meeting recording", type=["mp3", "wav", "m4a", "mp4", "webm", "mpeg"])
     if audio:
         st.audio(audio)
-    model = st.selectbox("Whisper model", ["tiny.en", "base.en"], index=0, help="tiny.en is faster on free CPU. base.en is more accurate but heavier.")
+    model = st.selectbox("Whisper model", ["tiny", "base"], index=0, help="Multilingual models. tiny is faster on free CPU; base is more accurate but heavier.")
+    language_mode = st.selectbox(
+        "Language",
+        ["Auto detect", "Arabic / Darija", "English"],
+        index=0,
+        help="Auto detect is recommended for Darija or mixed-language recordings.",
+    )
+    language_code = None if language_mode == "Auto detect" else ("ar" if language_mode == "Arabic / Darija" else "en")
 
     st.markdown("#### Speaker detection")
     auto_diarize = st.toggle(
@@ -64,16 +71,16 @@ with left:
     analyze = st.button("Analyze meeting", type="primary", use_container_width=True, disabled=audio is None or (auto_diarize and max_speakers < min_speakers))
 
 with right:
-    st.markdown("""<div class='card'><span class='tag'>Current pipeline</span><p><strong>1 · Transcription</strong><br><span class='small'>faster-whisper on CPU with timestamps and VAD.</span></p><p><strong>2 · Speaker diarization</strong><br><span class='small'>Optional pyannote Community-1 speaker turns aligned to Whisper segments.</span></p><p><strong>3 · Conversation intelligence</strong><br><span class='small'>Sentiment plus decision, action, risk, owner, and due-date extraction.</span></p><p><strong>4 · Memory-ready output</strong><br><span class='small'>The meeting can be added to Memory Vault for cross-meeting analysis.</span></p></div>""", unsafe_allow_html=True)
+    st.markdown("""<div class='card'><span class='tag'>Current pipeline</span><p><strong>1 · Multilingual transcription</strong><br><span class='small'>faster-whisper on CPU with language auto-detection, timestamps, and VAD.</span></p><p><strong>2 · Speaker diarization</strong><br><span class='small'>Optional pyannote Community-1 speaker turns aligned to Whisper segments.</span></p><p><strong>3 · Conversation intelligence</strong><br><span class='small'>Decision/action/risk extraction is currently strongest for English; Darija transcription and speaker separation are supported for testing.</span></p><p><strong>4 · Memory-ready output</strong><br><span class='small'>The meeting can be added to Memory Vault for cross-meeting analysis.</span></p></div>""", unsafe_allow_html=True)
     if auto_diarize:
-        st.info("Automatic diarization is requested. MeetingLens now checks alignment coverage before trusting the speaker labels. Low-confidence output is routed to Speaker Review.")
+        st.info("Automatic diarization is requested. MeetingLens checks alignment coverage before trusting speaker labels. Low-confidence output is routed to Speaker Review.")
     else:
-        st.info("Speaker Review remains available after transcription. Enable automatic diarization when the pyannote runtime is configured.")
+        st.info("Speaker Review remains available after transcription. Enable automatic diarization to separate speakers automatically.")
 
 if analyze and audio is not None:
     status = st.status("MeetingLens is processing the recording…", expanded=True)
     try:
-        status.write("Loading speech model…")
+        status.write("Loading multilingual speech model…")
         result = transcribe_audio(
             audio,
             model_size=model,
@@ -81,11 +88,12 @@ if analyze and audio is not None:
             hf_token=get_hf_token(),
             min_speakers=int(min_speakers) if auto_diarize else None,
             max_speakers=int(max_speakers) if auto_diarize else None,
+            language=language_code,
         )
         if auto_diarize:
             status.write("Aligning speaker turns with transcript timestamps…")
             status.write("Checking diarization coverage and fallback assignments…")
-        status.write("Extracting decisions, actions, risks, owners, and sentiment…")
+        status.write("Extracting meeting intelligence…")
         st.session_state.current_meeting = result
         status.update(label="Analysis complete", state="complete", expanded=False)
     except Exception as exc:
@@ -96,7 +104,12 @@ meeting = st.session_state.get("current_meeting")
 if meeting:
     st.divider()
     st.subheader(meeting.get("title", "Analyzed meeting"))
+    detected_language = meeting.get("language", "unknown")
+    language_probability = float(meeting.get("language_probability", 0.0) or 0.0)
+    st.caption(f"Detected language: {detected_language} · confidence {round(language_probability * 100)}%")
     st.caption(meeting.get("summary", ""))
+    if detected_language not in {"en", "english"}:
+        st.info("Transcription and speaker diarization are multilingual. Decision, Action, Risk, and sentiment extraction are still English-first, so review those fields carefully for Darija/Arabic audio.")
 
     diarization_status = meeting.get("diarization_status", "speaker-review-needed")
     diarization_meta = meeting.get("diarization", {})
