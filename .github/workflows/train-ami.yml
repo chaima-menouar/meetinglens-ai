@@ -5,9 +5,18 @@ on:
   push:
     branches: [main]
     paths:
-      - 'training/**'
+      - 'training/ami_dataset.py'
+      - 'training/download_ami.py'
+      - 'training/train_baseline.py'
+      - 'training/train_event_detectors.py'
+      - 'training/train_production_detectors.py'
+      - 'training/run_ami_training.py'
       - 'requirements-training.txt'
       - '.github/workflows/train-ami.yml'
+
+concurrency:
+  group: meetinglens-ami-training-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   train:
