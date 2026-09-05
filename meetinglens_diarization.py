@@ -75,6 +75,7 @@ def diarize_audio_file(
     return [
         SpeakerTurn(start=start, end=end, speaker=_normalize_speaker(label, labels))
         for start, end, label in sorted(raw_turns, key=lambda item: (item[0], item[1]))
+        if end > start
     ]
 
 
@@ -104,8 +105,12 @@ def assign_speakers_to_segments(
             if amount > 0:
                 scores[turn.speaker] = scores.get(turn.speaker, 0.0) + amount
 
+        segment_duration = max(0.2, end - start)
         if scores:
-            segment["speaker"] = max(scores.items(), key=lambda item: item[1])[0]
+            speaker, overlap = max(scores.items(), key=lambda item: item[1])
+            segment["speaker"] = speaker
+            segment["speaker_overlap_ratio"] = round(min(1.0, overlap / segment_duration), 3)
+            segment["speaker_assignment"] = "overlap"
             continue
 
         midpoint = (start + end) / 2
@@ -114,5 +119,44 @@ def assign_speakers_to_segments(
             key=lambda turn: min(abs(midpoint - turn.start), abs(midpoint - turn.end)),
         )
         segment["speaker"] = nearest.speaker
+        segment["speaker_overlap_ratio"] = 0.0
+        segment["speaker_assignment"] = "nearest"
 
     return segments
+
+
+def diarization_diagnostics(
+    segments: list[dict[str, Any]],
+    turns: list[SpeakerTurn],
+) -> dict[str, Any]:
+    speakers = sorted({turn.speaker for turn in turns})
+    total_segment_time = 0.0
+    overlap_weighted = 0.0
+    fallback_segments = 0
+
+    for segment in segments:
+        start = float(segment.get("start_sec", 0.0))
+        end = float(segment.get("end_sec", start))
+        duration = max(0.2, end - start)
+        ratio = float(segment.get("speaker_overlap_ratio", 0.0) or 0.0)
+        total_segment_time += duration
+        overlap_weighted += duration * ratio
+        if segment.get("speaker_assignment") == "nearest":
+            fallback_segments += 1
+
+    coverage = overlap_weighted / total_segment_time if total_segment_time else 0.0
+    if coverage >= 0.82 and fallback_segments <= max(1, len(segments) // 10):
+        quality = "high"
+    elif coverage >= 0.6:
+        quality = "medium"
+    else:
+        quality = "review"
+
+    return {
+        "speaker_count": len(speakers),
+        "speakers": speakers,
+        "turn_count": len(turns),
+        "coverage_pct": round(coverage * 100),
+        "fallback_segments": fallback_segments,
+        "quality": quality,
+    }
