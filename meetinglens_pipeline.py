@@ -12,6 +12,11 @@ _SENTIMENT = SentimentIntensityAnalyzer()
 _DECISION_PATTERNS = [r"\bwe (?:will|'ll|are going to)\b", r"\bwe (?:decided|agreed|confirmed|approved)\b", r"\blet(?:'s| us)\b", r"\bthe decision is\b", r"\bwe're keeping\b", r"\bwe chose\b"]
 _ACTION_PATTERNS = [r"\bi (?:will|'ll|am going to)\b", r"\bwe need to\b", r"\bneed to\b", r"\baction item\b", r"\bfollow up\b", r"\bi can\b", r"\bi'll own\b"]
 _RISK_PATTERNS = [r"\brisk\b", r"\bblock(?:er|ed|ing)?\b", r"\bdelay(?:ed|ing)?\b", r"\bissue\b", r"\bproblem\b", r"\bconcern\b", r"\bmight fail\b", r"\bmay fail\b", r"\bnot ready\b", r"\bdependency\b"]
+_EVENT_PATTERNS = {
+    "decision": _DECISION_PATTERNS,
+    "action": _ACTION_PATTERNS,
+    "risk": _RISK_PATTERNS,
+}
 _DUE_PATTERNS = [
     r"\b(today|tomorrow|tonight)\b",
     r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
@@ -34,19 +39,46 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
 
 
-def _confidence(text: str, patterns: list[str]) -> float:
+def _ml_scores(text: str) -> dict[str, dict[str, Any]]:
+    """Return reviewed production-model scores when promoted artifacts are present.
+
+    Model loading is optional and lazy. A deployment without artifacts or without the
+    training runtime keeps using deterministic rules with no behavior regression.
+    """
+    try:
+        from meetinglens_event_model import get_production_event_detectors
+
+        detectors = get_production_event_detectors()
+        return detectors.score(text) if detectors.available else {}
+    except Exception:
+        return {}
+
+
+def _event_signal(text: str, event: str, scores: dict[str, dict[str, Any]] | None = None) -> tuple[bool, str, float | None]:
+    patterns = _EVENT_PATTERNS[event]
+    if _matches(text, patterns):
+        return True, "rule", None
+    values = (scores or _ml_scores(text)).get(event, {})
+    if bool(values.get("detected")):
+        return True, "model", float(values.get("probability", 0.0))
+    return False, "none", None
+
+
+def _confidence(text: str, patterns: list[str], model_probability: float | None = None) -> float:
     hits = sum(1 for pattern in patterns if re.search(pattern, text.lower()))
     length_bonus = 0.04 if len(text.split()) >= 8 else 0
-    return round(min(0.97, 0.70 + hits * 0.09 + length_bonus), 2)
+    rule_confidence = min(0.97, 0.70 + hits * 0.09 + length_bonus)
+    if model_probability is None:
+        return round(rule_confidence, 2)
+    return round(max(rule_confidence if hits else 0.0, model_probability), 2)
 
 
 def _kind(text: str) -> str:
-    if _matches(text, _RISK_PATTERNS):
-        return "risk"
-    if _matches(text, _DECISION_PATTERNS):
-        return "decision"
-    if _matches(text, _ACTION_PATTERNS):
-        return "action"
+    scores = _ml_scores(text)
+    for event in ("risk", "decision", "action"):
+        detected, _, _ = _event_signal(text, event, scores)
+        if detected:
+            return event
     if "?" in text:
         return "question"
     return "conversation"
@@ -77,11 +109,16 @@ def _extract_decisions(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for item in segments:
         text = _clean(item.get("text", ""))
-        if text and _matches(text, _DECISION_PATTERNS):
+        if not text:
+            continue
+        scores = _ml_scores(text)
+        detected, source, probability = _event_signal(text, "decision", scores)
+        if detected:
             out.append({
                 "title": text,
                 "detail": f"Evidence: {item.get('speaker','Speaker')} at {item.get('timestamp','00:00')}",
-                "confidence": _confidence(text, _DECISION_PATTERNS),
+                "confidence": _confidence(text, _DECISION_PATTERNS, probability),
+                "signal_source": source,
                 "minute": item.get("minute", 0),
                 "timestamp": item.get("timestamp", "00:00"),
                 "speaker": item.get("speaker", "Speaker"),
@@ -93,12 +130,18 @@ def _extract_actions(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for item in segments:
         text = _clean(item.get("text", ""))
-        if text and _matches(text, _ACTION_PATTERNS):
+        if not text:
+            continue
+        scores = _ml_scores(text)
+        detected, source, probability = _event_signal(text, "action", scores)
+        if detected:
             out.append({
                 "task": text,
                 "owner": item.get("speaker") or "Unassigned",
                 "due": _due(text),
                 "status": "Open",
+                "confidence": _confidence(text, _ACTION_PATTERNS, probability),
+                "signal_source": source,
                 "minute": item.get("minute", 0),
                 "timestamp": item.get("timestamp", "00:00"),
             })
@@ -109,11 +152,17 @@ def _extract_risks(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for item in segments:
         text = _clean(item.get("text", ""))
-        if text and _matches(text, _RISK_PATTERNS):
+        if not text:
+            continue
+        scores = _ml_scores(text)
+        detected, source, probability = _event_signal(text, "risk", scores)
+        if detected:
             severity = "High" if item.get("sentiment") == "negative" or re.search(r"\b(blocked|blocking|critical|fail|delay)\b", text.lower()) else "Medium"
             out.append({
                 "title": text,
                 "severity": severity,
+                "confidence": _confidence(text, _RISK_PATTERNS, probability),
+                "signal_source": source,
                 "minute": item.get("minute", 0),
                 "timestamp": item.get("timestamp", "00:00"),
                 "speaker": item.get("speaker", "Speaker"),
