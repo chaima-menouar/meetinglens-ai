@@ -10,6 +10,7 @@ on:
       - 'training/train_baseline.py'
       - 'training/train_event_detectors.py'
       - 'training/train_production_detectors.py'
+      - 'training/train_candidate_rankers.py'
       - 'training/run_ami_training.py'
       - 'requirements-training.txt'
       - '.github/workflows/train-ami.yml'
@@ -81,7 +82,8 @@ jobs:
           if prod_path.exists():
               m = json.loads(prod_path.read_text())
               lines += [
-                  '## Production-safe transcript-only detectors',
+                  '## Production-safe gold transcript classifiers',
+                  f"- Supervision: {m.get('supervision', 'unknown')}",
                   f"- Macro event F1: {m['macro_event_f1']:.4f}",
                   f"- Macro event AP: {m['macro_event_average_precision']:.4f}",
               ]
@@ -91,7 +93,25 @@ jobs:
                       f"recall={values['recall']:.4f}, AP={values['average_precision']:.4f}, "
                       f"threshold={values['threshold']:.4f}"
                   )
-              lines += ['', '> Production-safe metrics use transcript text only, matching the information available after Whisper transcription.', '']
+              lines += ['', '> Inputs are transcript text only; targets are gold AMI summary links.', '']
+
+          rank_path = Path('artifacts/meeting_candidate_rankers/metrics.json')
+          if rank_path.exists():
+              m = json.loads(rank_path.read_text())
+              lines += ['## Meeting candidate rankers', '']
+              for event, values in m['events'].items():
+                  r = values['test_ranking']
+                  lines += [
+                      f"### {event}",
+                      f"- Test AP: {values['test_average_precision']:.4f}",
+                      f"- MRR: {r['mrr']:.4f}",
+                      f"- Median first gold rank: {r['median_first_positive_rank']:.1f}",
+                      f"- Hit@5: {r['hit@5']:.4f}",
+                      f"- Hit@10: {r['hit@10']:.4f}",
+                      f"- Hit@20: {r['hit@20']:.4f}",
+                      '',
+                  ]
+              lines += ['> Candidate ranking is the production-oriented formulation: rank transcript segments inside each meeting instead of classifying every utterance globally.', '']
 
           Path('summary.md').write_text('\n'.join(lines) + '\n')
           PY
@@ -106,5 +126,6 @@ jobs:
             artifacts/meeting_event_baseline/
             artifacts/meeting_event_detectors_v2/
             artifacts/meeting_event_detectors_production/
+            artifacts/meeting_candidate_rankers/
             data/processed/ami_events.csv
           retention-days: 14
