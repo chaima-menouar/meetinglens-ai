@@ -20,6 +20,12 @@ RISK_WORDS = {
     "risk", "blocked", "blocking", "blocker", "delay", "delayed", "issue",
     "problem", "concern", "dependency", "fail", "failure", "not ready",
 }
+SUMMARY_SECTION_LABELS = {
+    "decisions": "decision",
+    "actions": "action",
+    "problems": "risk",
+}
+LABEL_PRIORITY = {"other": 0, "risk": 1, "action": 2, "decision": 3}
 
 
 @dataclass
@@ -165,14 +171,75 @@ def _dialogue_act_type(element: ET.Element, da_types: dict[str, str]) -> str:
     return ""
 
 
+def _prefer_label(existing: str | None, candidate: str) -> str:
+    if existing is None or LABEL_PRIORITY.get(candidate, 0) > LABEL_PRIORITY.get(existing, 0):
+        return candidate
+    return existing
+
+
+def _collect_summary_link_labels(corpus_root: Path) -> dict[str, str]:
+    """Map AMI dialogue-act ids to decision/action/risk using gold summary links.
+
+    AMI abstractive summaries explicitly separate DECISIONS, ACTIONS and PROBLEMS.
+    The corresponding ``*.summlink.xml`` files point from an extracted dialogue act
+    to an abstractive sentence.  Following these links gives substantially cleaner
+    supervision than keyword-only weak labels and is the intended NXT relation.
+    """
+    sentence_labels: dict[str, str] = {}
+    for path in sorted(corpus_root.rglob("*.abssumm.xml")):
+        try:
+            root = ET.parse(path).getroot()
+        except ET.ParseError:
+            continue
+        for section in root.iter():
+            section_name = _local_name(section.tag).lower()
+            label = SUMMARY_SECTION_LABELS.get(section_name)
+            if not label:
+                continue
+            for child in section.iter():
+                if _local_name(child.tag).lower() != "sentence":
+                    continue
+                sentence_id = _get_id(child)
+                if sentence_id:
+                    sentence_labels[sentence_id] = label
+
+    dialogue_labels: dict[str, str] = {}
+    for path in sorted(corpus_root.rglob("*.summlink.xml")):
+        try:
+            root = ET.parse(path).getroot()
+        except ET.ParseError:
+            continue
+        for link in root.iter():
+            if _local_name(link.tag).lower() != "summlink":
+                continue
+            extractive_ids: list[str] = []
+            abstractive_ids: list[str] = []
+            for pointer in link.iter():
+                if _local_name(pointer.tag).lower() != "pointer":
+                    continue
+                role = pointer.attrib.get("role", "").lower()
+                href = pointer.attrib.get("href", "")
+                if role == "extractive":
+                    extractive_ids.extend(extract_ref_ids(href))
+                elif role == "abstractive":
+                    abstractive_ids.extend(extract_ref_ids(href))
+
+            linked_labels = [sentence_labels[x] for x in abstractive_ids if x in sentence_labels]
+            if not linked_labels:
+                continue
+            linked_label = max(linked_labels, key=lambda x: LABEL_PRIORITY.get(x, 0))
+            for dialogue_id in extractive_ids:
+                dialogue_labels[dialogue_id] = _prefer_label(dialogue_labels.get(dialogue_id), linked_label)
+    return dialogue_labels
+
+
 def _collect_decision_refs(corpus_root: Path) -> set[str]:
-    """Collect dialogue-act ids referenced by AMI decision annotations."""
+    """Legacy compatibility: collect explicit dialogue-act refs in decision files, if any."""
     refs: set[str] = set()
     decision_dirs = [p for p in corpus_root.rglob("decision") if p.is_dir()]
     files: list[Path] = []
     for directory in decision_dirs:
         files.extend(directory.rglob("*.xml"))
-    # Fallback for layouts where decision appears in the filename.
     if not files:
         files = [p for p in corpus_root.rglob("*.xml") if "decision" in p.name.lower()]
 
@@ -192,6 +259,7 @@ def build_examples(corpus_root: str | Path) -> list[Example]:
     root_path = Path(corpus_root)
     word_text, order_by_file = load_words(root_path)
     da_types = _load_da_types(root_path)
+    summary_link_labels = _collect_summary_link_labels(root_path)
     decision_refs = _collect_decision_refs(root_path)
     examples: list[Example] = []
 
@@ -221,7 +289,9 @@ def build_examples(corpus_root: str | Path) -> list[Example]:
                 text = _token_text(el)
             if not text or len(text) < 2:
                 continue
-            label = infer_label(da_type, text, decision_ref=source_id in decision_refs)
+            label = summary_link_labels.get(source_id)
+            if not label:
+                label = infer_label(da_type, text, decision_ref=source_id in decision_refs)
             examples.append(Example(meeting, speaker, text, label, da_type, source_id))
     return examples
 
