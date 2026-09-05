@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from meetinglens_intelligence import action_accountability, decision_drift, recurring_blockers
+from meetinglens_intelligence import action_accountability, decision_drift, meeting_search, recurring_blockers
 from meetinglens_memory_store import MeetingMemoryStore, meeting_fingerprint
 
 
@@ -9,7 +9,10 @@ def sample_meetings():
         {
             "title": "Launch Weekly 1",
             "duration_min": 20,
-            "segments": [{"text": "We will keep the Friday release.", "speaker": "Maya"}],
+            "segments": [
+                {"text": "We will keep the Friday release.", "speaker": "Maya", "kind": "decision", "timestamp": "10:00"},
+                {"text": "Analytics validation is blocking the final release check.", "speaker": "Omar", "kind": "risk", "timestamp": "12:00"},
+            ],
             "decisions": [{"title": "We will keep the Friday release", "detail": "Launch stays Friday"}],
             "actions": [{"task": "Validate analytics", "owner": "Omar", "due": "Tomorrow", "status": "Open"}],
             "risks": [{"title": "Analytics validation is blocking release", "severity": "High", "minute": 12}],
@@ -17,7 +20,7 @@ def sample_meetings():
         {
             "title": "Launch Weekly 2",
             "duration_min": 25,
-            "segments": [{"text": "We changed the Friday release and will delay it.", "speaker": "Maya"}],
+            "segments": [{"text": "We changed the Friday release and will delay it.", "speaker": "Maya", "kind": "decision", "timestamp": "08:00"}],
             "decisions": [{"title": "We changed the Friday release", "detail": "Delay the launch instead"}],
             "actions": [{"task": "Prepare revised rollout", "owner": "Unassigned", "due": "Not stated", "status": "Open"}],
             "risks": [{"title": "Analytics validation is still blocking the release", "severity": "High", "minute": 8}],
@@ -62,3 +65,11 @@ def test_action_accountability_flags_missing_owner_and_deadline():
     assert len(rows) == 2
     assert len(attention) == 1
     assert attention[0]["missing"] == "owner, deadline"
+
+
+def test_hybrid_search_returns_timestamped_evidence():
+    results = meeting_search(sample_meetings(), "analytics release validation")
+    assert results
+    assert results[0]["meeting"] == "Launch Weekly 1"
+    assert results[0]["timestamp"] == "12:00"
+    assert results[0]["retrieval"] in {"hybrid-tfidf", "lexical"}
