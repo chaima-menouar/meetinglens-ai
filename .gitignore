@@ -11,3 +11,12 @@ data/raw/
 data/processed/
 artifacts/
 *.joblib
+
+# Only reviewed meeting candidate rankers are promoted into the app.
+!artifacts/
+artifacts/*
+!artifacts/meeting_candidate_rankers/
+artifacts/meeting_candidate_rankers/*
+!artifacts/meeting_candidate_rankers/decision_ranker.joblib
+!artifacts/meeting_candidate_rankers/action_ranker.joblib
+!artifacts/meeting_candidate_rankers/metrics.json
