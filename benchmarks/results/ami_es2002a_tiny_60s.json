@@ -1,0 +1,23 @@
+{
+  "source": "AMI Meeting Corpus ES2002a Mix-Headset",
+  "sample_seconds": 60,
+  "github_actions_run_id": 33990584820,
+  "audio_file": "ami_sample.wav",
+  "audio_size_mb": 1.83,
+  "model_size": "tiny.en",
+  "diarization_requested": false,
+  "elapsed_seconds": 6.08,
+  "duration_min": 1,
+  "segments": 13,
+  "speakers": 1,
+  "decisions": 0,
+  "actions": 0,
+  "risks": 0,
+  "decision_candidates": 10,
+  "action_candidates": 5,
+  "diarization_status": "speaker-review-needed",
+  "diarization_coverage_pct": null,
+  "diarization_quality": null,
+  "fallback_segments": null,
+  "notes": "Real-audio transcription smoke test passed. Diarization was intentionally disabled because no HF_TOKEN was supplied to the one-off benchmark. The first 60 seconds contained no high-precision confirmed decision/action/risk events, while the promoted rankers still surfaced review candidates."
+}
