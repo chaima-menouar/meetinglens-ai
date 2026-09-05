@@ -212,9 +212,14 @@ def transcribe_audio(
 
         diarization_status = "speaker-review-needed"
         diarization_error = None
+        diarization_meta: dict[str, Any] | None = None
         if diarize:
             try:
-                from meetinglens_diarization import assign_speakers_to_segments, diarize_audio_file
+                from meetinglens_diarization import (
+                    assign_speakers_to_segments,
+                    diarization_diagnostics,
+                    diarize_audio_file,
+                )
 
                 turns = diarize_audio_file(
                     audio_path,
@@ -223,7 +228,12 @@ def transcribe_audio(
                     max_speakers=max_speakers,
                 )
                 segments = assign_speakers_to_segments(segments, turns)
-                diarization_status = "automatic-complete"
+                diarization_meta = diarization_diagnostics(segments, turns)
+                diarization_status = (
+                    "automatic-complete"
+                    if diarization_meta.get("quality") in {"high", "medium"}
+                    else "automatic-review-recommended"
+                )
             except Exception as exc:
                 diarization_status = "automatic-failed"
                 diarization_error = str(exc)
@@ -238,6 +248,8 @@ def transcribe_audio(
             "source": "audio",
             "diarization_status": diarization_status,
         }
+        if diarization_meta:
+            meeting["diarization"] = diarization_meta
         if diarization_error:
             meeting["diarization_error"] = diarization_error
         return refresh_intelligence(meeting)
