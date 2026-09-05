@@ -124,6 +124,24 @@ with tabs[1]:
         st.markdown('<div class="panel"><div class="pt">Who owns what now</div><div class="ps">Follow-through starts with a named owner.</div>',unsafe_allow_html=True)
         for x in meeting.get("actions",[]):st.markdown(f'<div class="decision"><strong>{x.get("task","Task")}</strong><div class="mt">{x.get("owner","Unassigned")} · due {x.get("due","TBD")} · {x.get("status","Open")}</div></div>',unsafe_allow_html=True)
         st.markdown('</div>',unsafe_allow_html=True)
+
+    decision_candidates=meeting.get("decision_candidates",[])
+    action_candidates=meeting.get("action_candidates",[])
+    if decision_candidates or action_candidates:
+        st.markdown('<div class="section"><div class="num">AI / candidate review</div><h3>Signals worth a second look</h3><p>The ranker surfaces likely evidence without silently turning uncertain language into a confirmed commitment.</p></div>',unsafe_allow_html=True)
+        r1,r2=st.columns(2)
+        with r1:
+            st.markdown('<div class="panel"><div class="pt">Decision candidates</div><div class="ps">Ranked transcript moments · review before confirming.</div>',unsafe_allow_html=True)
+            if decision_candidates:
+                for x in decision_candidates:st.markdown(f'<div class="decision"><strong>#{x.get("rank","–")} · {x.get("speaker","Speaker")} · {x.get("timestamp","00:00")}</strong><div class="mt">{x.get("text","")}</div><span class="conf">candidate score {round(float(x.get("score",0))*100)}%</span></div>',unsafe_allow_html=True)
+            else:st.markdown('<div class="mt">No additional decision candidates need review.</div>',unsafe_allow_html=True)
+            st.markdown('</div>',unsafe_allow_html=True)
+        with r2:
+            st.markdown('<div class="panel"><div class="pt">Action candidates</div><div class="ps">Potential follow-through that did not match a deterministic rule.</div>',unsafe_allow_html=True)
+            if action_candidates:
+                for x in action_candidates:st.markdown(f'<div class="decision"><strong>#{x.get("rank","–")} · {x.get("speaker","Speaker")} · {x.get("timestamp","00:00")}</strong><div class="mt">{x.get("text","")}</div><span class="conf">candidate score {round(float(x.get("score",0))*100)}%</span></div>',unsafe_allow_html=True)
+            else:st.markdown('<div class="mt">No additional action candidates need review.</div>',unsafe_allow_html=True)
+            st.markdown('</div>',unsafe_allow_html=True)
     st.dataframe(pd.DataFrame(meeting.get("segments",[])),use_container_width=True,hide_index=True)
 
 with tabs[2]:
