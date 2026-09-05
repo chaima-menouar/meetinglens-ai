@@ -15,6 +15,9 @@ on:
       - 'requirements-training.txt'
       - '.github/workflows/train-ami.yml'
 
+permissions:
+  contents: write
+
 concurrency:
   group: meetinglens-ami-training-${{ github.ref }}
   cancel-in-progress: true
@@ -116,6 +119,51 @@ jobs:
           Path('summary.md').write_text('\n'.join(lines) + '\n')
           PY
           cat summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Quality gate candidate rankers
+        id: ranker_gate
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path('artifacts/meeting_candidate_rankers/metrics.json')
+          if not path.exists():
+              raise SystemExit('Candidate-ranker metrics are missing')
+          metrics = json.loads(path.read_text())
+          decision = metrics['events']['decision']['validation_ranking']
+          action = metrics['events']['action']['validation_ranking']
+
+          checks = {
+              'decision_mrr': decision['mrr'] >= 0.30,
+              'decision_hit5': decision['hit@5'] >= 0.45,
+              'decision_hit10': decision['hit@10'] >= 0.65,
+              'action_mrr': action['mrr'] >= 0.50,
+              'action_hit5': action['hit@5'] >= 0.70,
+          }
+          promote = all(checks.values())
+          print('promotion checks:', checks)
+          print('promote:', promote)
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as handle:
+              handle.write(f"promote={'true' if promote else 'false'}\n")
+          PY
+
+      - name: Promote reviewed candidate rankers
+        if: steps.ranker_gate.outputs.promote == 'true' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name "meetinglens-ml-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f \
+            artifacts/meeting_candidate_rankers/decision_ranker.joblib \
+            artifacts/meeting_candidate_rankers/action_ranker.joblib \
+            artifacts/meeting_candidate_rankers/metrics.json
+          if git diff --cached --quiet; then
+            echo "Promoted rankers are already current."
+          else
+            git commit -m "ml: promote reviewed meeting candidate rankers"
+            git push origin HEAD:main
+          fi
 
       - name: Upload trained models and metrics
         if: success()
