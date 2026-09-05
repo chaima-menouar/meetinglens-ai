@@ -5,3 +5,9 @@ venv/
 .env
 .DS_Store
 .streamlit/secrets.toml
+
+# Local corpora and generated training artifacts
+data/raw/
+data/processed/
+artifacts/
+*.joblib
