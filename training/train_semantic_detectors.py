@@ -65,8 +65,10 @@ def train_semantic_detectors(
     encoder_name: str = DEFAULT_ENCODER,
     batch_size: int = 128,
 ) -> dict:
-    df = pd.read_csv(data_path).dropna(subset=["text", "label", "meeting_id"])
+    df = pd.read_csv(data_path).dropna(subset=["text", "meeting_id"])
     df = df[df["text"].astype(str).str.len() >= 2].copy()
+    target_column = "gold_label" if "gold_label" in df.columns else "label"
+    df[target_column] = df[target_column].fillna("other").astype(str)
     train_df, val_df, test_df = split_train_val_test(df)
 
     output = Path(output_dir)
@@ -80,8 +82,10 @@ def train_semantic_detectors(
     metrics: dict[str, object] = {
         "model": "semantic_minilm_logistic_regression",
         "encoder": encoder_name,
+        "target_column": target_column,
+        "supervision": "gold_summary_links" if target_column == "gold_label" else "legacy_mixed_labels",
         "production_features": ["transcript_text"],
-        "annotation_features_excluded": ["dialogue_act", "summary_links"],
+        "annotation_features_excluded_from_inputs": ["dialogue_act", "summary_links"],
         "rows_total": int(len(df)),
         "train_rows": int(len(train_df)),
         "validation_rows": int(len(val_df)),
@@ -89,12 +93,15 @@ def train_semantic_detectors(
         "embedding_dimension": int(x_train.shape[1]),
         "events": {},
     }
-    predictions = test_df[["meeting_id", "speaker", "text", "label"]].copy()
+    keep_cols = [c for c in ["meeting_id", "speaker", "text", "label", "label_source", "gold_label"] if c in test_df.columns]
+    predictions = test_df[keep_cols].copy()
 
     for event in EVENT_LABELS:
-        y_train = (train_df["label"].astype(str) == event).astype(int).to_numpy()
-        y_val = (val_df["label"].astype(str) == event).astype(int).to_numpy()
-        y_test = (test_df["label"].astype(str) == event).astype(int).to_numpy()
+        y_train = (train_df[target_column] == event).astype(int).to_numpy()
+        y_val = (val_df[target_column] == event).astype(int).to_numpy()
+        y_test = (test_df[target_column] == event).astype(int).to_numpy()
+        if y_train.sum() == 0 or y_val.sum() == 0 or y_test.sum() == 0:
+            raise ValueError(f"Event {event!r} is missing gold positives in one split")
 
         classifier = LogisticRegression(
             max_iter=2500,
@@ -120,9 +127,10 @@ def train_semantic_detectors(
                 "classifier": classifier,
                 "threshold": threshold,
                 "event": event,
-                "version": "semantic-minilm-v1",
+                "version": "semantic-minilm-gold-v2",
                 "encoder": encoder_name,
                 "input": "transcript_text_only",
+                "supervision": metrics["supervision"],
             },
             output / f"{event}_detector.joblib",
             compress=3,
@@ -158,6 +166,7 @@ if __name__ == "__main__":
     )
     print(json.dumps({
         "encoder": result["encoder"],
+        "supervision": result["supervision"],
         "macro_event_f1": result["macro_event_f1"],
         "macro_event_average_precision": result["macro_event_average_precision"],
         "events": result["events"],
